@@ -30,21 +30,26 @@ extern "C" {
 /* ===== 常量（与 UI 布局共享，改动需同步） ===== */
 #define DG_MAP_W             32     /* 单层地图宽（tile） */
 #define DG_MAP_H             32     /* 单层地图高（tile） */
-#define DG_VIEWPORT_W        200    /* 主视窗像素尺寸 */
-#define DG_VIEWPORT_H        200
+/* 主视窗 352×352：**满圆**设计 —— 360 直径圆屏上能铺满赤道弦的最大 16 整除
+ * 正方形（半侧 176 < 半径 180，所以 y=180 一行几乎无黑边），四角超出圆的
+ * 部分被物理边框吃掉（不计入可见面积）。v0.3 首版用内接 256×256，实测左右
+ * 各留 52px 黑牙，观感“画面小”；改满圆 + HUD 悬浮后可见地图面积 +48%。
+ * 22×22 tile 视距靠 FOV 半径限亮，圆内基本全亮。 */
+#define DG_VIEWPORT_W        352    /* 主视窗像素尺寸 */
+#define DG_VIEWPORT_H        352
 #define DG_TILE_PX           16     /* 屏上单 tile 像素 */
-#define DG_VIEW_TILE_W       (DG_VIEWPORT_W / DG_TILE_PX)   /* 12 */
-#define DG_VIEW_TILE_H       (DG_VIEWPORT_H / DG_TILE_PX)   /* 12 */
+#define DG_VIEW_TILE_W       (DG_VIEWPORT_W / DG_TILE_PX)   /* 22 */
+#define DG_VIEW_TILE_H       (DG_VIEWPORT_H / DG_TILE_PX)   /* 22 */
 #define DG_MAX_INVENTORY     34     /* 背包容量（Shattered 原版 34） */
 #define DG_SAVE_SLOTS        3      /* 存档槽位数 */
 
 /* ===== 枚举 ===== */
 
-/* UI 底部 6 圆键，与 ui_dungeon.c 上的按钮顺序一一对应 */
+/* UI 底部悬浮键（圆屏 v0.3 重设：点击移动为主，只留 3 颗真有用键） */
 typedef enum {
     DG_BTN_INVENTORY = 0,
-    DG_BTN_CAST      = 1,
-    DG_BTN_EQUIP     = 2,
+    DG_BTN_CAST      = 1,   /* v0.3 暂未接线（法师技能），枚举位保留 */
+    DG_BTN_EQUIP     = 2,   /* v0.3 暂未接线（装备栏），枚举位保留 */
     DG_BTN_SEARCH    = 3,
     DG_BTN_WAIT      = 4,
     DG_BTN_MENU      = 5,
@@ -128,6 +133,20 @@ const uint16_t *dg_api_get_tilemap_fb(int *out_w, int *out_h);
 
 /* 消息 log 逐行拉取（index 从 0 起，最多返回 3 行；无消息返回 0）。 */
 int dg_api_get_message(char *buf, int cap, int index);
+
+/* 背包/状态 overlay 多行文本（v0.3，含 \n，LVGL label 直接消费；
+ * buf 建议 ≥192：多行中文模板最坏情况约 150B）。 */
+int dg_api_get_stats_text(char *buf, int cap);
+
+/* 英雄 tile 坐标与相机左上 tile（v0.3 圆屏调试注入用：
+ * 屏幕像素 = 视口屏幕原点 + (hero - cam) * DG_TILE_PX，屏几何归 UI 层）。 */
+void dg_api_get_hero_pos(int *x, int *y);
+void dg_api_get_camera(int *x, int *y);
+
+/* 调试导出（cap 建议 ≥160）：一行给出英雄/相机/出口/物品/怪 tile 坐标 + 英雄数值，
+ * 形如 "D h=8,8 c=0,0 s=20/20 g=37 d=1F e=12,5 i=7,9|10,14 m=5,6"，
+ * 供 PC 脚本定向点击，并做文字层取证（血量 / 金币 / 深度）。 */
+int dg_api_debug_dump(char *buf, int cap);
 
 /* ===== 存档槽位 ===== */
 

@@ -73,6 +73,22 @@ int dg_api_get_message(char *buf, int cap, int index) {
     return Game::instance().get_message(buf, cap, index);
 }
 
+int dg_api_get_stats_text(char *buf, int cap) {
+    return Game::instance().get_stats_text(buf, cap);
+}
+
+void dg_api_get_hero_pos(int *x, int *y) {
+    Game::instance().get_hero_pos(x, y);
+}
+
+void dg_api_get_camera(int *x, int *y) {
+    Game::instance().get_cam(x, y);
+}
+
+int dg_api_debug_dump(char *buf, int cap) {
+    return Game::instance().debug_dump(buf, cap);
+}
+
 bool dg_api_has_save(int slot) {
     return save::has_save(slot);
 }
@@ -90,7 +106,7 @@ dg_scene_t dg_api_current_scene(void) {
 }
 
 const char* dg_api_version(void) {
-    return "0.2.0-playable";
+    return "0.3.0-roundui";
 }
 
 int dg_api_run_selftest(void) {

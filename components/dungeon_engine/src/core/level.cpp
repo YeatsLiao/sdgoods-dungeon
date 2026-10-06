@@ -21,7 +21,8 @@ namespace dg {
 bool Level::passable(int x, int y) const {
     if (x < 0 || x >= DG_MAP_W || y < 0 || y >= DG_MAP_H) return false;
     dg_terrain_t t = tiles[x + y * DG_MAP_W].terr;
-    return t != DG_TERR_WALL && t != DG_TERR_EMPTY && t != DG_TERR_STATUE;
+    return t != DG_TERR_WALL && t != DG_TERR_EMPTY && t != DG_TERR_STATUE &&
+           t != DG_TERR_SECRET;   /* 秘密门未揭露时是实体墙（v0.3） */
 }
 
 int Level::distance(int ax, int ay, int bx, int by) const {
@@ -111,6 +112,28 @@ bool Level::generate(uint32_t seed) {
     }
     tiles[entrance_pos].terr = DG_TERR_ENTRY;
     tiles[exit_pos].terr = DG_TERR_EXIT;
+
+    /* 秘密门（v0.3）：找紧邻地板的内墙改 SECRET，外观与墙同，
+     * 搜索揭露后变门 —— 给探索层藏点。确定性：走同一 r 序列。 */
+    int secrets = 0;
+    for (int tries = 0; secrets < 2 && tries < 200; tries++) {
+        int x = 1 + r.nextInt(DG_MAP_W - 2);
+        int y = 1 + r.nextInt(DG_MAP_H - 2);
+        Tile& t = tiles[x + y * DG_MAP_W];
+        if (t.terr != DG_TERR_WALL) continue;
+        /* 只开上下左右两个方向都成对的地（避免露在地图外围） */
+        bool up_floor    = tiles[x + (y - 1) * DG_MAP_W].terr == DG_TERR_FLOOR;
+        bool down_floor  = tiles[x + (y + 1) * DG_MAP_W].terr == DG_TERR_FLOOR;
+        bool left_floor  = tiles[x - 1 + y * DG_MAP_W].terr == DG_TERR_FLOOR;
+        bool right_floor = tiles[x + 1 + y * DG_MAP_W].terr == DG_TERR_FLOOR;
+        if (!((up_floor && down_floor) || (left_floor && right_floor))) continue;
+        /* 远离入口/楼梯，不阻断主路 */
+        int ex = entrance_pos % DG_MAP_W, ey = entrance_pos / DG_MAP_W;
+        if (distance(x, y, ex, ey) < 6) continue;
+        t.terr = DG_TERR_SECRET;
+        secrets++;
+    }
+    ESP_LOGI(TAG, "secret doors: %d", secrets);
 
     actor_count = 0;
     return true;

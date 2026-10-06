@@ -212,10 +212,20 @@ public:
     int  get_status_text(char* buf, int cap);
     const uint16_t* get_tilemap_fb(int* w, int* h);
     int  get_message(char* buf, int cap, int index);
+    /* v0.3 圆屏适配/调试注入用：英雄 tile 坐标与相机左上 tile，
+     * 屏幕像素换算留在 UI 层（引擎不感知屏几何） */
+    void get_hero_pos(int* x, int* y) { if (x) *x = hero->x; if (y) *y = hero->y; }
+    void get_cam(int* x, int* y)      { if (x) *x = cam_x; if (y) *y = cam_y; }
+    int  get_stats_text(char* buf, int cap);   /* 背包 overlay 多行文本 */
+
+    /* 调试注入用（串口 'v'）：一行导出英雄/相机/出口/物品/怪物 tile 坐标，
+     * 供 PC 端脚本定向点击。格式：
+     *   D h=8,8 c=0,0 e=12,5 i=7,9|10,14 m=5,6|20,3   （e=-1,-1 = 未见） */
+    int  debug_dump(char* buf, int cap);
 
     /* v0.2 回合流与渲染 */
     int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile（渲染时算，视口点击换算也用） */
-    int  path_queue[64];                       /* 自动寻路分步队列（packed pos） */
+    int  path_queue[128];                      /* 自动寻路分步队列（256 视窗下路径变长） */
     int  path_len = 0, path_head = 0;
     uint32_t last_step_ms = 0;                 /* 自动行走分步节奏门控（ms） */
 

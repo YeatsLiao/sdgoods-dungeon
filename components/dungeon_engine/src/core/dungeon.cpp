@@ -5,7 +5,7 @@
  *
  * dungeon.cpp —— Game 状态机核心 + tile 渲染器（v0.2 可玩版）
  *
- * 渲染契约（与 dungeon_api.h 一致）：get_tilemap_fb 返回 200×200 RGB565
+ * 渲染契约（与 dungeon_api.h 一致）：get_tilemap_fb 返回 352×352 RGB565
  * PSRAM fb；fb_dirty 时重绘，否则返回 NULL 让 UI 跳帧。素材缺失
  * （未烧 assets.bin）时 gfx::load() 失败 → 恒返 NULL，UI 保留棋盘占位。
  *
@@ -34,11 +34,11 @@ static bool   s_mob_used[Game::kMaxMob];
 static Item   s_item_pool[Game::kMaxItem];
 static bool   s_item_used[Game::kMaxItem];
 
-/* 主视窗 fb（PSRAM 常驻，200×200×2B = 80KB） */
+/* 主视窗 fb（PSRAM 常驻，352×352×2B = 248KB） */
 static uint16_t* s_fb = nullptr;
 
 /* ===== 视野半径 ===== */
-static constexpr int kFovRadius = 8;
+static constexpr int kFovRadius = 11;   /* 覆盖到圆屏可见边缘（半径 180px = 11.25 tile） */
 
 /* ===== 地形 → 图集索引 =====
  * 常量抄自上游 core/.../tiles/DungeonTileSheet.java（WIDTH=16 列，xy 1 基）：
@@ -253,6 +253,12 @@ bool Game::hero_try_step(int gx, int gy) {
     t.actor = hero;
     game_time++;
 
+    /* 踩到关着的门自动打开（秘密门揭露后也是 DOOR） */
+    if (t.terr == DG_TERR_DOOR) {
+        t.terr = DG_TERR_OPEN_DOOR;
+        fb_dirty = true;
+    }
+
     /* 自动拾取 */
     if (t.item) {
         Item* it = t.item;
@@ -289,7 +295,7 @@ void Game::advance_mobs() {
     }
     if (hero->hp <= 0) {
         scene = DG_SCENE_GAME_OVER;
-        log("你死了……按电源键重开或等待存档结算。");
+        log("你死了……点按屏幕重新开始。");
         ESP_LOGW(TAG, "hero died at depth %d", depth);
     }
 }
@@ -330,8 +336,8 @@ void Game::on_tap(int gx, int gy) {
         acted = hero_try_step(gx, gy);
     } else {
         /* 远处 → A* 整条路径入队，本帧先走第一步 */
-        int steps[64];
-        int n = pathfinder::find_path(level, hero->x, hero->y, gx, gy, steps, 64);
+        int steps[128];
+        int n = pathfinder::find_path(level, hero->x, hero->y, gx, gy, steps, 128);
         if (n > 0) {
             memcpy(path_queue, steps, n * sizeof(int));
             path_len = n;
@@ -369,16 +375,46 @@ void Game::on_button(dg_btn_id_t btn) {
         advance_mobs();
         fb_dirty = true;
         break;
-    case DG_BTN_SEARCH:
+    case DG_BTN_SEARCH: {
+        /* 搜索（v0.3）：耗一回合，揭 8 邻 + 自身格子的秘密门；
+         * 成功率随等级升（原版 BaseSearch 简化） */
         if (scene != DG_SCENE_IN_GAME) break;
-        log("你环顾四周，什么也没发现。（秘密门 v0.3）");
+        game_time++;
+        bool found = false;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int sx = hero->x + dx, sy = hero->y + dy;
+                if (sx < 0 || sx >= DG_MAP_W || sy < 0 || sy >= DG_MAP_H) continue;
+                Tile& t = level->at(sx, sy);
+                if (t.terr != DG_TERR_SECRET) continue;
+                if (ui_rng->nextInt(100) < 20 + hero->lvl * 5) {
+                    t.terr = DG_TERR_DOOR;
+                    found = true;
+                }
+            }
+        }
+        if (found) {
+            log("你发现了隐藏的门！");
+            recalc_fov();
+        } else {
+            log("你环顾四周，什么也没发现。");
+        }
+        advance_mobs();
+        fb_dirty = true;
         break;
+    }
     case DG_BTN_INVENTORY:
+        if (scene == DG_SCENE_GAME_OVER) break;
         scene = (scene == DG_SCENE_INVENTORY) ? DG_SCENE_IN_GAME : DG_SCENE_INVENTORY;
         fb_dirty = true;
         break;
     case DG_BTN_MENU:
-        log("菜单将在 v0.3 提供（存档槽位 / 重开）。");
+        /* GAME_OVER 后的唯一重开入口（电源键会丢进度，重开更快） */
+        if (scene == DG_SCENE_GAME_OVER) {
+            new_game(hero->cls, (uint32_t)esp_timer_get_time());
+        } else {
+            log("存档槽位将在 v0.4 提供。");
+        }
         break;
     default:
         break;
@@ -479,8 +515,9 @@ const uint16_t* Game::get_tilemap_fb(int *w, int *h) {
 
 int Game::get_status_text(char *buf, int cap) {
     if (scene < DG_SCENE_IN_GAME) return 0;
-    return snprintf(buf, cap, "HP %d/%d  Depth:%dF  Lv %d  Gold:%d",
-                    hero->hp, hero->hp_max, depth + 1, hero->lvl, hero->gold);
+    /* 圆屏顶部弦窄（y=24 处可用宽 ~195px），状态行必须短：中文标签 + 数字 */
+    return snprintf(buf, cap, "生命 %d/%d · %d层 · 金币 %d",
+                    hero->hp, hero->hp_max, depth + 1, hero->gold);
 }
 
 int Game::get_message(char *buf, int cap, int index) {
@@ -489,6 +526,60 @@ int Game::get_message(char *buf, int cap, int index) {
     const char* key = log_lines[from];
     if (!key) return 0;
     return snprintf(buf, cap, "%s", key);
+}
+
+/* 背包/状态 overlay 多行文本（LVGL 用中文子集字体渲染） */
+int Game::get_stats_text(char* buf, int cap) {
+    if (scene < DG_SCENE_IN_GAME) return 0;
+    const char* cls_name = "战士";
+    return snprintf(buf, cap,
+        "%s  Lv %d\n生命 %d/%d\n经验 %d/%d\n力量 %d  命中 %d\n金币 %d\n深度 %dF  回合 %u",
+        cls_name, hero->lvl, hero->hp, hero->hp_max,
+        hero->exp, 5 + hero->lvl * 5,
+        hero->str, hero->attack_skill,
+        hero->gold, depth + 1, (unsigned)game_time);
+}
+
+/* 调试导出（串口 'v'）：一行给出定向点击所需的全部 tile 坐标。
+ * 只统计已探明（explored）或当前可见的目标，避开让脚本去撞未知区。 */
+int Game::debug_dump(char* buf, int cap) {
+    if (!level || !hero) return 0;
+    int n = snprintf(buf, cap, "D h=%d,%d c=%d,%d s=%d/%d g=%d d=%dF e=",
+                     hero->x, hero->y, cam_x, cam_y,
+                     hero->hp, hero->hp_max, hero->gold, depth + 1);
+    if (n < 0 || n >= cap) return 0;
+
+    int ex = -1, ey = -1;
+    int items[4][2], nm = 0;
+    int mobs[4][2],  nmo = 0;
+    for (int y = 0; y < DG_MAP_H; y++) {
+        for (int x = 0; x < DG_MAP_W; x++) {
+            Tile& t = level->at(x, y);
+            if (t.terr == DG_TERR_EXIT && ex < 0) { ex = x; ey = y; }
+            if (t.item && nm < 4) { items[nm][0] = x; items[nm][1] = y; nm++; }
+            if (t.actor && t.actor != (Actor*)hero && t.vis_current && nmo < 4) {
+                mobs[nmo][0] = x; mobs[nmo][1] = y; nmo++;
+            }
+        }
+    }
+    /* 每段都卡住越界：snprintf 返回值是「本应写入的长度」，直接累加会算飞 */
+    int w = snprintf(buf + n, cap - n, "%d,%d i=", ex, ey);
+    if (w < 0 || n + w >= cap) return 0;
+    n += w;
+    for (int i = 0; i < nm; i++) {
+        w = snprintf(buf + n, cap - n, "%s%d,%d", i ? "|" : "", items[i][0], items[i][1]);
+        if (w < 0 || n + w >= cap) return 0;
+        n += w;
+    }
+    w = snprintf(buf + n, cap - n, " m=");
+    if (w < 0 || n + w >= cap) return 0;
+    n += w;
+    for (int i = 0; i < nmo; i++) {
+        w = snprintf(buf + n, cap - n, "%s%d,%d", i ? "|" : "", mobs[i][0], mobs[i][1]);
+        if (w < 0 || n + w >= cap) return 0;
+        n += w;
+    }
+    return n;
 }
 
 }  /* namespace dg */

@@ -8,6 +8,7 @@
 #include "dg_types.h"
 #include "rng/java_random.h"      /* Game::ui_rng->nextInt 需完整类型 */
 #include "esp_log.h"
+#include <cstdio>
 
 static const char *TAG = "dg.hero";
 
@@ -20,17 +21,32 @@ int Hero::act() {
 
 int Hero::attack(Actor* enemy) {
     if (!enemy) return 0;
-    /* Shattered 手感公式骨架版：命中 = 简单 roll，正式 v0.3 会照搬
-       Hero.attackSkill(enemy) vs enemy.defenseSkill(this) + 命中判定 */
-    int dmg = Game::instance().ui_rng->nextInt(4) + 2;
+    JavaRandom& r = *Game::instance().ui_rng;
+    /* Shattered 手感简化版（v0.3）：命中 = roll(attack_skill) vs 对方防御技；
+     * 伤害 = 1..str/2（力量驱动，升级 +str 即可感变强） */
+    if (r.nextInt(attack_skill + 10) < static_cast<Mob*>(enemy)->defenseSkill(this)) {
+        Game::instance().log("你砍空了。");
+        return 1;
+    }
+    int dmg = 1 + r.nextInt(str / 2 + 1);
     enemy->damage(dmg, "hit");
     if (!enemy->is_alive()) {
-        static const char* s_kill = "你解决了它。+2 经验。";
-        Game::instance().log(s_kill);
-        this->exp += static_cast<Mob*>(enemy)->xp_in_kill;
+        int xp = static_cast<Mob*>(enemy)->xp_in_kill;
+        exp += xp;
+        Game::instance().log("你解决了它。获得经验。");
+        /* 升级门槛：5 + lvl*5（原版 maxExp 简化），升级回 5 血 + 成长 */
+        while (exp >= 5 + lvl * 5) {
+            exp -= 5 + lvl * 5;
+            lvl++;
+            hp_max += 5; hp += 5;
+            str += 1; attack_skill += 2; defense_skill += 1;
+            static char s_lvl_msgs[8][80];
+            snprintf(s_lvl_msgs[lvl % 8], sizeof(s_lvl_msgs[0]),
+                     "你升到了 %d 级！力量 %d，生命 %d。", lvl, str, hp_max);
+            Game::instance().log(s_lvl_msgs[lvl % 8]);
+        }
     } else {
-        static const char* s_hit = "你砍中了敌人。";
-        Game::instance().log(s_hit);
+        Game::instance().log("你砍中了敌人。");
     }
     return 1;
 }
