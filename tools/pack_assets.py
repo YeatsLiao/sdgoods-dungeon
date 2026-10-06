@@ -46,6 +46,13 @@ kind 推断规则（无 manifest 时，按扩展名 + 路径前缀）：
         width   2B  uint16 LE
         height  2B  uint16 LE
         pixels  w*h*2 字节，RGB565 小端（与 LVGL TRUE_COLOR 同序）
+
+    透明处理（v0.4 起，精灵图必须，地形图忽略）：上游 PNG 带真 alpha，而
+    ESP32 侧只存 16 位颜色，故烘焙时把 alpha<128 的像素写成**色键**
+    KEY_RGB565 = 0x001F（纯蓝 0,0,31 —— 上游像素画里不会出现这个颜色），
+    alpha>=128 的像素按黑底预乘后转 565。运行时 gfx::blit_masked 跳过色键。
+    早期版本用「纯黑=透明」，会把精灵的黑色描边画出洞，已废弃。
+
     Pillow 不可用时跳过烘焙只出原图条目（引擎自动回退棋盘占位）。
 
 版权红线：resources/ 下的 Shattered 素材受 CC-BY-SA 4.0 保护，
@@ -81,23 +88,76 @@ KIND_NAME = {0: "png_atlas", 1: "sprite", 2: "sound", 3: "music",
 
 # 预烘焙表：源 png -> 烘焙产物名（kind=1，内容为 RGB5 容器）。
 # 引擎 gfx.cpp 按这些名字查 hash 表；新增图集时两侧同步。
+#
+# 值 = (产物名, 是否做透明色键)。地形图集是整格铺满的不透明图，走 OPAQUE；
+# 精灵 / 图标图必须留透明，否则黑底方块会盖住地形。
 BAKE_MAP = {
-    "environment/tiles_sewers.png": "tiles/sewers.rgb565",   # 256×256 地形图集（第 1 章下水道）
-    "sprites/rat.png":              "sprites/rat.rgb565",    # 256×64  怪物帧图（第 0 帧=idle）
-    "sprites/rogue.png":            "sprites/hero.rgb565",   # 256×128 英雄帧图（idle 帧在 (1,0) 12×15）
+    # ---- 地形：章节 tileset（256×256，索引见 dg_icons.h::DTS_*，抄上游 DungeonTileSheet）----
+    # keyed=False：地形整格铺满，透明像素按黑底合成（隘隙 / 深渊就是黑的），
+    # 这样渲染器走 memcpy 不透明 blit，不必每像素比色键。
+    "environment/tiles_sewers.png": ("tiles/sewers.rgb565", False),   # 1-4F 下水道
+    "environment/tiles_prison.png": ("tiles/prison.rgb565", False),   # 5-8F 监狱
+    "environment/tiles_caves.png":  ("tiles/caves.rgb565",  False),   # 9-12F 洞穴
+    # ---- 怪物帧图（16×16 一格，第 0 行横向连帧即 idle 动画）----
+    # 名录对齐上游 MobSpawner.standardMobRotation：下水道 1-4F / 监狱 5-8F / 洞穴 9-12F
+    "sprites/rat.png":      ("sprites/rat.rgb565", True),
+    "sprites/snake.png":    ("sprites/snake.rgb565", True),
+    "sprites/gnoll.png":    ("sprites/gnoll.rgb565", True),
+    "sprites/swarm.png":    ("sprites/swarm.rgb565", True),
+    "sprites/crab.png":     ("sprites/crab.rgb565", True),
+    "sprites/slime.png":    ("sprites/slime.rgb565", True),
+    "sprites/skeleton.png": ("sprites/skeleton.rgb565", True),
+    "sprites/thief.png":    ("sprites/thief.rgb565", True),
+    "sprites/dm100.png":    ("sprites/dm100.rgb565", True),
+    "sprites/guard.png":    ("sprites/guard.rgb565", True),
+    "sprites/necromancer.png": ("sprites/necromancer.rgb565", True),
+    "sprites/bat.png":      ("sprites/bat.rgb565", True),
+    "sprites/brute.png":    ("sprites/brute.rgb565", True),
+    "sprites/shaman.png":   ("sprites/shaman.rgb565", True),
+    "sprites/spinner.png":  ("sprites/spinner.rgb565", True),
+    "sprites/dm200.png":    ("sprites/dm200.rgb565", True),
+    "sprites/mimic.png":    ("sprites/mimic.rgb565", True),
+    # ---- 章节首领：4F Goo / 8F Tengu / 12F DwarfKing（king.png）----
+    "sprites/goo.png":      ("sprites/goo.rgb565", True),
+    "sprites/tengu.png":    ("sprites/tengu.rgb565", True),
+    "sprites/king.png":     ("sprites/king.rgb565", True),
+    # ---- 英雄：4 职业各一张（256×128，idle 帧在 (1,0) 12×15）----
+    "sprites/warrior.png":  ("sprites/hero_warrior.rgb565", True),
+    "sprites/mage.png":     ("sprites/hero_mage.rgb565", True),
+    "sprites/rogue.png":    ("sprites/hero_rogue.rgb565", True),
+    "sprites/huntress.png": ("sprites/hero_huntress.rgb565", True),
+    # ---- 物品图标（256×512，16 列，索引见 dg_icons.h::DGITEM_*）----
+    "sprites/items.png":    ("sprites/items.rgb565", True),
+    # ---- UI 图标（256×128，16 列，索引见 dg_icons.h::DGICON_*）----
+    "interfaces/icons.png": ("interfaces/icons.rgb565", True),
 }
 
+# 烘焙时用的透明色键（RGB565：R0 G0 B31）。见文件头「透明处理」。
+KEY_RGB565 = 0x001F
 
-def bake_rgb565(png_bytes):
-    """PNG 字节 -> RGB5 容器字节（RGBA 直转 565，丢弃 alpha 合成到黑底）。"""
+
+def bake_rgb565(png_bytes, keyed=False):
+    """PNG 字节 -> RGB5 容器字节。
+
+    keyed=True：alpha<128 写成色键（精灵 / 图标），其余按黑底预乘；
+    keyed=False：整幅按黑底合成（地形，铺满不透明）。
+    """
     import io
     img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     w, h = img.size
     rgba = img.tobytes()
     out = bytearray(b"RGB5" + struct.pack("<HH", w, h))
+    pack = struct.Struct("<H").pack
     for i in range(0, w * h * 4, 4):
-        r, g, b = rgba[i], rgba[i + 1], rgba[i + 2]
-        out += struct.pack("<H", ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
+        r, g, b, a = rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]
+        if keyed and a < 128:
+            out += pack(KEY_RGB565)
+            continue
+        # 半透明像素按黑底预乘，避免精灵边缘出现亮边
+        r = (r * a) >> 8
+        g = (g * a) >> 8
+        b = (b * a) >> 8
+        out += pack(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
     return bytes(out)
 
 
@@ -165,6 +225,12 @@ def main():
                     help="按路径前缀排除（如 music/），可多次）")
     args = ap.parse_args()
 
+    # 默认排除音乐：上游 31 首 OGG 共 18MB，超 assets 分区 12MB，且本工程
+    # 音频走引擎侧程序化合成（无 OGG 解码器），打包了也是死数据。
+    if not args.exclude:
+        args.exclude = ["music/"]
+        print("· 默认 --exclude music/（18MB OGG 超分区且无解码器）")
+
     root = Path(args.resources)
     if not root.is_dir():
         sys.exit(f"✗ 资源目录不存在：{root}\n"
@@ -182,9 +248,12 @@ def main():
     # 预烘焙：源图存在才烘，Pillow 缺失时告警不阻断（引擎回退棋盘占位）
     if Image is not None:
         by_name = {name: data for _, name, data in items}
-        for src, baked in BAKE_MAP.items():
+        missing = [s for s in BAKE_MAP if s not in by_name]
+        for missing_src in missing:
+            print(f"⚠ 烘焙源缺失：{missing_src}（引擎对应素材会回退占位）")
+        for src, (baked, keyed) in BAKE_MAP.items():
             if src in by_name:
-                items.append((KIND_SPRITE, baked, bake_rgb565(by_name[src])))
+                items.append((KIND_SPRITE, baked, bake_rgb565(by_name[src], keyed)))
                 print(f"· 烘焙 {src} -> {baked} ({len(items[-1][2])/1024:.0f} KB)")
     else:
         print("⚠ 未安装 Pillow，跳过 RGB565 预烘焙 —— 引擎将无真实贴图！"
