@@ -69,6 +69,36 @@ private:
  */
 int dg_test_java_random_selftest();
 
+/* ===== 上游战斗 / 伤害掷骰助手（对齐 com.watabou.utils.Random）=====
+ * 这些是 hit()/damageRoll() 反复要用的均匀与三角分布，集中一处，
+ * 免得 hero.cpp / mob.cpp / item_def.cpp 三份各写各的口径漂。 */
+
+/* Random.IntRange(min,max) —— 均匀闭区间 [min,max] */
+inline int rndIntRange(JavaRandom* r, int min, int max)
+{
+    if (max <= min) return min;
+    return min + r->nextInt(max - min + 1);
+}
+
+/* Random.NormalIntRange(min,max) —— 上游伤害用的三角分布（两次均匀取平均） */
+inline int rndNormalRange(JavaRandom* r, int min, int max)
+{
+    if (max <= min) return min;
+    int a = min + r->nextInt(max - min + 1);
+    int b = min + r->nextInt(max - min + 1);
+    return (a + b) >> 1;
+}
+
+/* Char.hit() 核心：acuRoll=rand[0,acu) vs defRoll=rand[0,def)，acuRoll>=defRoll 命中。
+ *   · 上游 defStat<=0 直接必中；acuStat<=0 视为落空。
+ *   · 隐身 / 偷袭必中的分支由调用方短路（不进这里）。 */
+inline bool rollHit(JavaRandom* r, int acuStat, int defStat)
+{
+    if (defStat <= 0) return true;
+    if (acuStat <= 0) return false;
+    return r->nextInt(acuStat) >= r->nextInt(defStat);
+}
+
 }  /* namespace dg */
 
 #endif
