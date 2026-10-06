@@ -14,6 +14,7 @@ idf_component_register(
     SRCS
         "main.c"
         "game/ui_dungeon.c"
+        "game/dg_audio.c"
 
     INCLUDE_DIRS
         "game"

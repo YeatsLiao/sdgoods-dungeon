@@ -58,3 +58,6 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 
 # LVGL 16bit byte order: align with platform baseline FACEENGINE (RGB panel wants high byte first; screenshot path assumes same)
 CONFIG_LV_COLOR_16_SWAP=y
+# v0.4：LVGL 内存改走标准 malloc（extmem threshold=0 自动落 PSRAM），
+# 默认 32KB 静态池对背包网格+多层页面不够用
+CONFIG_LV_MEM_CUSTOM=y
