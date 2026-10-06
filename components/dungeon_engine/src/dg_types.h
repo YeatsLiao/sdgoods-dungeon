@@ -3,15 +3,18 @@
  * Copyright (c) 2026 Yeats Liao
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * dg_types.h —— 引擎内部核心类型（Actor / Item / Level / Game 前向声明）
+ * dg_types.h —— 引擎内部核心类型（Tile / Actor / Item / Level / Game）
  *
  * 设计约束（架构决策）：
- *   1. 无 heap 分配在 hot path（act() / render）—— 所有 Actor / Item 从
- *      Game 内部的静态池分配（kActorPool / kItemPool）
+ *   1. 无 heap 分配在 hot path（act() / render）—— 所有 Actor / Item / Buff
+ *      从 Game 内部的静态池分配，池槽位用位图标记占用
  *   2. 禁止 exceptions / RTTI —— 见 sdkconfig.defaults
  *   3. Tile 状态用固定数组 Tile map[DG_MAP_W * DG_MAP_H]，32×32 = 1024 项
- *      × 8B/tile ≈ 8KB，放内部 SRAM 快访问
- *   4. Actor 用虚函数 act()，回合制调度器按时间戳挑最早的执行
+ *      × 12B/tile ≈ 12KB，放内部 SRAM 快访问
+ *   4. Actor 用虚函数 act()，回合制调度器由英雄行动驱动（非全局时间片）
+ *   5. v0.4 起 Item / Mob 改为**数据驱动**（kind + sub + tier 查定义表），
+ *      不再为每种物品派生子类 —— 34 格背包 × 30 余种物品的类层级在 ESP32
+ *      上既费 flash 又费栈，查表 + switch 更好维护
  */
 #ifndef DG_TYPES_H
 #define DG_TYPES_H
@@ -29,137 +32,177 @@ class Actor;
 class Hero;
 class Mob;
 class Item;
-class Buff;
 class JavaRandom;
+struct MobSpec;
 
 /* ===== Tile ===== */
 struct Tile {
-    dg_terrain_t terr : 5;
-    uint16_t     vis_seen     : 1;    /* 玩家曾到过，视觉记忆 */
-    uint16_t     vis_magical  : 1;    /* 魔法视野 */
-    uint16_t     vis_current  : 1;    /* 本帧可见（FOV 内） */
-    uint16_t     explored     : 1;    /* 永久揭雾 */
-    uint16_t     reserved     : 3;
-    uint8_t      ch;                  /* 章节主题（选 tile atlas 用） */
-    Item*        item;                /* 掉地上的物品 */
-    Actor*       actor;               /* 占位的 Actor（Hero 或 Mob） */
+    uint16_t terr        : 5;    /* dg_terrain_t（v0.4 共 16 种） */
+    uint16_t vis_seen    : 1;    /* 玩家曾到过，视觉记忆 */
+    uint16_t vis_magical : 1;    /* 魔法视野 */
+    uint16_t vis_current : 1;    /* 本帧可见（FOV 内） */
+    uint16_t explored    : 1;    /* 永久揭雾 */
+    uint16_t trap_known  : 1;    /* 陷阱已被发现（未发现时按地板画） */
+    uint16_t chest_open  : 1;    /* 宝箱已被打开 */
+    uint16_t reserved    : 5;
+    uint8_t  variant;            /* 生成期算好的装饰哈希 0..255（渲染零成本） */
+    Item*    item;               /* 掉地上的物品 */
+    Actor*   actor;              /* 占位的 Actor（Hero 或 Mob） */
 };
 
-/* ===== Buff / Status Effect ===== */
-class Buff {
-public:
+/* ===== Buff / Status Effect =====
+ * v0.4 落地：SLOW / HASTE / INVISIBILITY / MINDVISION / LEVITATION / POISON /
+ * BURNING / SLEEP / PARALYSIS / FRIGHT / ROOTS / OINTMENT。全部是「计时器 +
+ * 若干判定读数」，没有多态行为，所以退化成结构体 + 静态池（旧版 remove_buff
+ * 里对池对象 delete 是致命 bug，一并修掉）。 */
+struct Buff {
     enum Type : uint8_t {
-        NONE = 0, BURNING, POISON, SLEEP, PARALYSIS, FRIGHT, ROOTS,
-        INVISIBILITY, MIND_VISION, LEVITATION, OINTMENT, HUNTERS_CALL,
+        NONE = 0,
+        SLOW, HASTE, INVISIBILITY, MINDVISION, LEVITATION,
+        POISON, BURNING, SLEEP, PARALYSIS, FRIGHT, ROOTS, OINTMENT,
         TYPE_COUNT
     };
     Type     type;
-    int      duration;        /* 剩余 tick；-1 表示永久 */
+    int      duration;        /* 剩余回合；-1 = 永久（装备类） */
+    int      value;           /* 附价值（如力量加成、隐身来源） */
     Actor*   owner;
     Buff*    next;            /* intrusive linked list */
-
-    Buff(Type t, int dur) : type(t), duration(dur), owner(nullptr), next(nullptr) {}
-    virtual ~Buff() = default;
-    virtual void attach() {}
-    virtual void detach() {}
-    virtual bool act() { return --duration > 0; }   /* true=继续存在 */
 };
 
 /* ===== Actor 基类 ===== */
 class Actor {
 public:
-    int     x = 0, y = 0;
-    int     hp = 1, hp_max = 1;
-    int     speed = 1;              /* 行动速度倍率 */
-    uint32_t alignment = 0;         /* 0=NEUTRAL 1=ENEMY 2=ALLY */
-    uint32_t flags = 0;             /* property bitfield */
-    Buff*   first_buff = nullptr;   /* intrusive list head */
-    Level*  level = nullptr;
-    uint32_t ready_at = 0;          /* 下一次可行动的 game_time */
-    const char* name_key = nullptr; /* messages_zh.properties 里的键 */
+    int      x = 0, y = 0;
+    int      from_x = 0, from_y = 0;   /* 平滑移动：本段动画起点 */
+    int      hp = 1, hp_max = 1;
+    int      speed = 1;                /* 行动速度倍率 */
+    uint8_t  sheet = 0;                /* gfx::Sheet 句柄（渲染取图用） */
+    uint8_t  flash_ticks = 0;          /* 受击闪白剩余动画帧 */
+    uint8_t  move_anim = 255;          /* 0..254 = 正在从 from→(x,y) 插值 */
+    uint8_t  anim_seed = 0;            /* idle 帧相位抖动，避免全场同拍 */
+    uint32_t alignment = 0;            /* 0=NEUTRAL 1=ENEMY 2=ALLY */
+    uint32_t flags = 0;                /* property bitfield */
+    Buff*    first_buff = nullptr;     /* intrusive list head */
+    Level*   level = nullptr;
+    uint32_t ready_at = 0;             /* 下一次可行动的 game_time */
+    const char* name_key = nullptr;    /* 中文名（消息与飘字用） */
 
-    virtual ~Actor() = default;
-    virtual int  act() = 0;         /* 返回耗时 tick，或 -1 表示等待输入 */
+    virtual ~Actor() {}
+    virtual int  act() = 0;            /* 返回耗时 tick，或 -1 表示等待输入 */
     virtual bool is_alive() const { return hp > 0; }
+    /* 基础伤害结算：掉血 + 闪白 + 飘字 + 死亡判定（子类先改数再调基类） */
     virtual void damage(int dmg, const char* src);
     virtual void die();
 
     pos_t pos() const { return (pos_t)(x + y * DG_MAP_W); }
     void  set_pos(int _x, int _y) { x = _x; y = _y; }
 
-    void add_buff(Buff* b);
+    /* 渲染用：把 from→to 的进度换算成 0..255（255 = 已到位） */
+    bool  moving() const { return move_anim < 255; }
+
+    void add_buff(Buff::Type t, int duration, int value = 0);
     void remove_buff(Buff::Type t);
-    Buff* get_buff(Buff::Type t);
-    bool has_buff(Buff::Type t) { return get_buff(t) != nullptr; }
+    Buff* get_buff(Buff::Type t) const;
+    bool  has_buff(Buff::Type t) const { return get_buff(t) != nullptr; }
+    int   buff_turns(Buff::Type t);     /* 无该 buff 返回 0 */
+    void  act_buffs();                  /* 计时递减 + 周期效果结算 */
 };
 
 /* ===== Hero（玩家）===== */
 class Hero : public Actor {
 public:
-    int str = 10;      /* 力量 */
+    static constexpr int kMaxEnergy = 300;   /* 上游 hunger 口径：300 满 */
+
+    int str = 10;                /* 力量 */
     int exp = 0;
     int lvl = 1;
     int gold = 0;
     int attack_skill = 50;
     int defense_skill = 4;
+    int energy = kMaxEnergy;     /* 饥饿：走到 1/3 以下开始掉血 */
+    int keys = 0;                /* 钥匙数量（上锁的门/宝箱消费） */
+    bool has_amulet = false;     /* 通关信物 */
     dg_class_t cls = DG_CLASS_WARRIOR;
 
-    Item*           inventory[DG_MAX_INVENTORY] = {0};
-    int             inv_count = 0;
-    Item*           equipped_weapon = nullptr;
-    Item*           equipped_armor  = nullptr;
+    Item* inventory[DG_MAX_INVENTORY] = {0};
+    int   inv_count = 0;
+    Item* equipped_weapon = nullptr;
+    Item* equipped_armor  = nullptr;
+    Item* equipped_ring   = nullptr;
 
-    virtual int act() override;              /* 返回 -1 等待输入 */
+    int  act() override;
     int  attack(Actor* enemy);
-    int  defense(Mob* enemy);
+    int  defenseRoll(Mob* enemy);
+    void damage(int dmg, const char* src) override;   /* 先过护甲减伤 */
+    void die() override;
     bool pickup(Item* it);
     bool equip(Item* it);
+    bool unequip(Item* it);
     bool use(int slot);
+    void drop(int slot);
+
+    int  maxExp() const { return 5 + lvl * 5; }
+    /* 命中 / 闪避要把戒指加成算进去，所以不在头文件里内联（RG_* 枚举属于
+     * item_def.h，dg_types.h 不能反向 include） */
+    int  attackSkill() const;
+    int  defenseSkill() const;
+    int  armorDrMax() const;             /* 当前护甲最大减伤 */
+    bool starving() const { return energy <= 0; }
+    int  STR_RATION() const { return 150; }   /* 一次进食恢复量 */
 };
 
-/* ===== Mob（怪物基类）===== */
+/* ===== Mob（怪物：单一具体类 + 物种表驱动）=====
+ * 上游是 Mob → Rat → Snake 的类层级；本移植把差异压进 MobSpec 常量表
+ * （见 actor/mob_spec.h），AI 差异用 flags 位（远程 / 首领 / 潜行）分支，
+ * 少 20 个 vtable 换 1 个 switch，flash 与调试都更划算。 */
 class Mob : public Actor {
 public:
+    const MobSpec* spec = nullptr;
     int  attack_min = 1, attack_max = 1;
     int  defense = 0;
     int  xp_in_kill = 0;
-    int  max_level = 5;         /* 出现层数区间上界 */
-    uint8_t see_range = 8;
-    uint8_t search_range = 4;
+    int  see_range = 8;
+    uint8_t state = 0;             /* 见 State */
+    int  home_x = 0, home_y = 0;   /* 游荡锚点（别把怪放风筝拉走） */
 
-    virtual int act() override;
-    virtual int damageRoll()   { return attack_min + rand_int(attack_max - attack_min + 1); }
-    virtual int attackSkill(Actor* target);
-    virtual int defenseSkill(Actor* target);
-    virtual bool surprised_by(Actor* target);
+    int act() override;
+    int damageRoll();
+    int attackSkill(Actor* target);
+    int defenseSkill(Actor* target);
+    void damage(int dmg, const char* src) override;   /* 分裂怪在此一分为二 */
+    void die() override;                              /* 掉落 + 经验结算入口 */
+    bool surprised_by(Actor* target);
 
-    /* 状态机 */
     enum State : uint8_t { SLEEPING, WANDERING, HUNTING, FLEEING, PASSIVE };
-    State state = SLEEPING;
 
 protected:
     int rand_int(int bound);
 };
 
-/* ===== Item ===== */
+/* ===== Item（数据驱动；定义表见 item/item_def.h）=====
+ * kind 的取值顺序必须与 dungeon_api.h::dg_item_kind_t 严格一致。 */
 class Item {
 public:
     enum Kind : uint8_t {
-        K_WEAPON, K_ARMOR, K_POTION, K_SCROLL, K_RING, K_WAND,
-        K_FOOD, K_KEY, K_GOLD, K_AMULET, K_STONE, K_ARTIFACT,
+        K_WEAPON = 0, K_ARMOR, K_POTION, K_SCROLL, K_RING, K_WAND,
+        K_FOOD, K_KEY, K_GOLD, K_AMULET,
         KIND_COUNT
     };
-    Kind        kind;
-    int         x = 0, y = 0;
-    int         qty = 1;
-    uint16_t    sprite_index = 0;
-    const char* name_key = nullptr;
+    Kind        kind = K_GOLD;
+    int16_t     sub = 0;           /* 同大类变体号（药水类型 / 法杖元素…） */
+    int16_t     tier = 0;          /* 装备档位 1..5，非装备 0 */
+    int16_t     qty = 1;
+    int16_t     x = 0, y = 0;
+    int16_t     icon = 0;          /* items.png 格子号 */
+    int16_t     str_req = 0;       /* 力量需求 */
+    uint8_t     cursed = 0;        /* 诅咒（读卷轴 / 使用才显现） */
+    uint8_t     equipped = 0;      /* 0 背包 1 武器 2 护甲 3 戒指 */
+    const char* name = nullptr;    /* 中文名（item_def 静态表） */
 
-    virtual ~Item() = default;
-    virtual void on_pickup(Hero* h)   { (void)h; }
-    virtual void on_equip(Hero* h)    { (void)h; }
-    virtual void on_use(Hero* h)      { (void)h; }
-    virtual void on_drop(Level* l);   /* 掉到 (x,y) 的地上 */
+    bool is_equipment() const {
+        return kind == K_WEAPON || kind == K_ARMOR || kind == K_RING;
+    }
+    void on_drop(Level* l);
 };
 
 /* ===== Level（单层地图）===== */
@@ -167,24 +210,33 @@ class Level {
 public:
     static constexpr int LENGTH = DG_MAP_W * DG_MAP_H;
 
-    Tile   tiles[LENGTH];
-    int    depth = 0;
+    Tile     tiles[LENGTH];
+    int      depth = 0;            /* 0 基（HUD 显示 +1） */
     uint32_t seed = 0;
-    Hero*  hero = nullptr;         /* back-pointer */
-    Actor* actors[64] = {0};       /* 本层所有 Actor（含 Hero），最多 64 */
-    int    actor_count = 0;
-    pos_t  entrance_pos = 0;
-    pos_t  exit_pos = 0;
+    Hero*    hero = nullptr;       /* back-pointer */
+    Actor*   actors[64] = {0};     /* 本层所有 Actor（含 Hero），最多 64 */
+    int      actor_count = 0;
+    pos_t    entrance_pos = 0;
+    pos_t    exit_pos = 0;
+    pos_t    amulet_pos = 0;       /* 12F 基座（其余层 = 0 且无意义） */
 
-    virtual bool generate(uint32_t seed);   /* 程序化生成，返回成功 */
-    virtual void create_mobs_and_items();
-    virtual ~Level() = default;
+    bool generate(uint32_t seed, int depth);   /* 程序化生成，返回成功 */
+    void reset_view();                          /* 视野/占用指针清零 */
 
     Tile& at(int x, int y)             { return tiles[x + y * DG_MAP_W]; }
     const Tile& at(int x, int y) const { return tiles[x + y * DG_MAP_W]; }
-    bool passable(int x, int y) const;
-    bool flammable(int x, int y) const { return false; }
+    Tile& at(pos_t p)                  { return tiles[p]; }
+
+    bool passable(int x, int y) const;   /* 英雄/怪可站 */
+    bool solid(int x, int y) const;      /* 墙类：渲染缝合与遮挡判定 */
+    bool water_at(int x, int y) const;
+    bool flameable(int x, int y) const { return at(x, y).terr == DG_TERR_GRASS ||
+                                                at(x, y).terr == DG_TERR_HIGH_GRASS; }
     int  distance(int ax, int ay, int bx, int by) const;
+    int  chapter() const;                /* 0 下水道 1 监狱 2 洞穴 */
+
+    void add_actor(Actor* a);
+    void del_actor(Actor* a);
 };
 
 /* ===== Game（顶层状态机 + 单例）===== */
@@ -199,11 +251,19 @@ public:
     void on_long_press(int gx, int gy);
     void on_button(dg_btn_id_t btn);
 
+    /* --- 场景流 --- */
+    void goto_title();
+    void goto_class_select();
+    void pick_class(int cls);
+    void menu_action(int action, int slot);
+    int  selected_class = 0;
+
     Hero*        hero  = nullptr;
     Level*       level = nullptr;
     int          depth = 0;
     uint32_t     seed  = 0;
-    uint32_t     game_time = 0;                     /* 全局回合时间（tick） */
+    uint32_t     game_time = 0;                     /* 全局回合计数 */
+    uint32_t     anim_ms = 0;                       /* 动画时钟（每 tick 刷新） */
     dg_scene_t   scene = DG_SCENE_TITLE;
     JavaRandom*  rng   = nullptr;                   /* 世界 RNG，影响关卡生成 */
     JavaRandom*  ui_rng = nullptr;                  /* 不影响世界状态的杂项 RNG */
@@ -212,43 +272,90 @@ public:
     int  get_status_text(char* buf, int cap);
     const uint16_t* get_tilemap_fb(int* w, int* h);
     int  get_message(char* buf, int cap, int index);
-    /* v0.3 圆屏适配/调试注入用：英雄 tile 坐标与相机左上 tile，
-     * 屏幕像素换算留在 UI 层（引擎不感知屏几何） */
     void get_hero_pos(int* x, int* y) { if (x) *x = hero->x; if (y) *y = hero->y; }
     void get_cam(int* x, int* y)      { if (x) *x = cam_x; if (y) *y = cam_y; }
-    int  get_stats_text(char* buf, int cap);   /* 背包 overlay 多行文本 */
+    int  get_stats_text(char* buf, int cap);
+    void get_hud(dg_hud_t* out);
+    bool inv_get(int slot, dg_item_info_t* out);
+    bool inv_use(int slot);
+    bool inv_equip(int slot);
+    void inv_drop(int slot);
+    int  equip_mask();
 
-    /* 调试注入用（串口 'v'）：一行导出英雄/相机/出口/物品/怪物 tile 坐标，
-     * 供 PC 端脚本定向点击。格式：
-     *   D h=8,8 c=0,0 e=12,5 i=7,9|10,14 m=5,6|20,3   （e=-1,-1 = 未见） */
+    /* 调试注入用（串口 'v'）：一行导出英雄/相机/出口/物品/怪物 tile 坐标 */
     int  debug_dump(char* buf, int cap);
 
-    /* v0.2 回合流与渲染 */
-    int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile（渲染时算，视口点击换算也用） */
-    int  path_queue[128];                      /* 自动寻路分步队列（256 视窗下路径变长） */
+    /* --- 回合与移动 --- */
+    int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile */
+    int  cam_px = 0, cam_py = 0;              /* 渲染用像素相机（可亚 tile 平滑） */
+    int  path_queue[128];                      /* 自动寻路分步队列 */
     int  path_len = 0, path_head = 0;
     uint32_t last_step_ms = 0;                 /* 自动行走分步节奏门控（ms） */
 
     void recalc_fov();
-    bool hero_try_step(int gx, int gy);        /* 走/砍/拾取一步；成功返回 true */
-    void advance_mobs();                       /* 怪物回合（英雄行动后调） */
-    bool descend_stairs();                     /* 踩到 EXIT → 生成下一层 */
-    void spawn_level_content();                /* 本层怪物 + 掉落物（静态池） */
-    Mob* alloc_mob();
+    bool hero_try_step(int gx, int gy);        /* 走/砍/拾取一步 */
+    void end_turn();                           /* 视野 + 怪物回合 + 饥饿 */
+    void advance_mobs();
+    bool descend_stairs();                     /* 楼梯 → 下一层 */
+    bool take_amulet();
+    void spawn_level_content();
+    Mob*  alloc_mob();
+    void  free_mob(Mob* m);
+    Item* alloc_item();
+    void  free_item(Item* it);
+    Buff* alloc_buff();
+    void  free_buff(Buff* b);
+    /* 掉落：按物种表 / 章节掉落表生成一件，落到 (x,y) */
+    Item* drop_random_item(int x, int y, int quality_hint);
+    Item* make_item(int kind, int sub);
 
-    /* 静态内存池（避免 heap） */
+    /* --- 视觉特效（引擎内渲染，UI 只搬运 fb）--- */
+    static constexpr int kMaxFloats = 12;
+    struct FloatText {
+        int16_t  x, y;          /* tile 坐标 */
+        uint32_t born_ms;
+        uint16_t color;
+        char     text[10];      /* "12" / "-7" / "L V!" / MISS */
+        bool     used;
+    };
+    FloatText floats[kMaxFloats] = {};
+    void add_float(int x, int y, const char* text, uint16_t color);
+
+    static constexpr int kMaxBeams = 6;
+    struct Beam {
+        int16_t  x0, y0, x1, y1;
+        uint32_t born_ms;
+        uint16_t color;
+        bool     used;
+    };
+    Beam beams[kMaxBeams] = {};
+    void add_beam(int x0, int y0, int x1, int y1, uint16_t color);
+
+    void flash_actor(Actor* a);               /* 受击闪白 1 段动画 */
+
+    /* --- 音效队列（ring buffer，UI/音频层每帧 pop）--- */
+    static constexpr int kMaxSfx = 16;
+    uint8_t sfx_ring[kMaxSfx] = {};
+    int     sfx_head = 0, sfx_count = 0;
+    void sfx(int id);
+    bool pop_sfx(int* id);
+
+    /* 静态内存池容量 */
     static constexpr int kMaxMob    = 32;
     static constexpr int kMaxItem   = 64;
     static constexpr int kMaxBuff   = 32;
 
-    /* 消息 log */
-    static constexpr int kLogLines = 32;
-    const char* log_lines[kLogLines];   /* 存 messages_zh.properties 的键 */
-    int         log_head = 0;
-    void log(const char* key);
+    /* 消息 log：环形定长缓冲，log() 内部拷贝。早期版本只存 char* ，调用方
+     * 传栈上 snprintf 缓冲 → 读出来是乱码（真机才会爆），改成存体。 */
+    static constexpr int kLogLines = 16;
+    static constexpr int kLogLen   = 64;
+    char log_lines[kLogLines][kLogLen];
+    int  log_head = 0;
+    void log(const char* text);
 
     /* 渲染 dirty flag */
     bool fb_dirty = true;
+    bool anim_running = false;          /* 有动画在跑（渲染器每帧都要重画） */
 
 private:
     Game();
@@ -280,6 +387,8 @@ namespace save {
     bool has_save(int slot);
     bool load(int slot);
     bool store(int slot);
+    bool destroy(int slot);
+    bool info(int slot, dg_save_info_t* out);
 }
 
 }  /* namespace dg */

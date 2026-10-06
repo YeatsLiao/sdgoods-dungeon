@@ -19,7 +19,7 @@ namespace fov {
 /* 遮挡视线的地形：实体墙、未挖通的地图外、装饰柱、关着的门 */
 static inline bool blocks_light(Level* lv, int x, int y) {
     if (x < 0 || x >= DG_MAP_W || y < 0 || y >= DG_MAP_H) return true;
-    dg_terrain_t t = lv->at(x, y).terr;
+    dg_terrain_t t = (dg_terrain_t)lv->at(x, y).terr;
     return t == DG_TERR_WALL || t == DG_TERR_EMPTY ||
            t == DG_TERR_STATUE || t == DG_TERR_DOOR || t == DG_TERR_SECRET;
 }

@@ -17,9 +17,12 @@ idf_component_register(
         "src/api_bridge.cpp"
         "src/core/dungeon.cpp"
         "src/core/level.cpp"
+        "src/core/render.cpp"
         "src/actor/hero.cpp"
         "src/actor/mob.cpp"
+        "src/actor/mob_spec.cpp"
         "src/item/item.cpp"
+        "src/item/item_def.cpp"
         "src/rng/java_random.cpp"
         "src/pathfinder/astar.cpp"
         "src/fov/fov.cpp"
@@ -36,6 +39,7 @@ idf_component_register(
     REQUIRES
         esp_partition
         esp_timer
+        esp_hw_support        # esp_random.h：新局 seed
         spi_flash
         nvs_flash
         freertos
