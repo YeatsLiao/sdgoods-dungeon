@@ -124,7 +124,9 @@ def guided(prefix, coords, walk_wait=4.0):
     print("等待开机…")
     ses.wait(6)
     ses.shot(prefix + "_01.png")
-    for n, xy in enumerate([c for c in coords.split(";") if c.strip()], start=2):
+    start_game(ses)
+    ses.shot(prefix + "_02.png")
+    for n, xy in enumerate([c for c in coords.split(";") if c.strip()], start=3):
         print("tap", xy.strip())
         ses.s.write(("t" + xy.strip()).encode())
         ses.s.flush()
@@ -137,8 +139,8 @@ def guided(prefix, coords, walk_wait=4.0):
 
 
 DUMP_RE = re.compile(
-    r"D h=(-?\d+),(-?\d+) c=(-?\d+),(-?\d+) s=(-?\d+)/(\d+) g=(\d+) d=(\d+)F "
-    r"e=(-?\d+),(-?\d+)\s+i=([^ ]*)\s+m=(.*)$")
+    r"D h=(-?\d+),(-?\d+) c=(-?\d+),(-?\d+) s=(-?\d+)/(\d+) lv=(\d+) g=(\d+) d=(\d+)F "
+    r"e=(-?\d+),(-?\d+)\s+i=([^ ]*)(?:\s+m=(.*))?$")
 
 
 def last_dump(logs):
@@ -153,13 +155,20 @@ def last_dump(logs):
                 "hero": (int(g[0]), int(g[1])),
                 "cam": (int(g[2]), int(g[3])),
                 "hp": (int(g[4]), int(g[5])),
-                "gold": int(g[6]),
-                "depth": int(g[7]),
-                "exit": (int(g[8]), int(g[9])),
-                "items": pairs(g[10]),
-                "mobs": pairs(g[11]),
+                "lvl": int(g[6]),
+                "gold": int(g[7]),
+                "depth": int(g[8]),
+                "exit": (int(g[9]), int(g[10])),
+                "items": pairs(g[11]),
+                "mobs": pairs(g[12] or ""),
             }
     return None
+
+
+def start_game(ses, cls="1", settle=1.0):
+    """v0.4：开机即标题页。直推 '1'..'4' = 选职业并开局（引擎 new_game →
+    IN_GAME）。不走像素命中，取证确定性强。"""
+    ses.press(cls, settle)
 
 
 def auto(rounds=20, prefix="shots/auto", walk_wait=5.0, prefer_exit=False):
@@ -171,6 +180,9 @@ def auto(rounds=20, prefix="shots/auto", walk_wait=5.0, prefer_exit=False):
     ses.wait(6)
     shot_idx = 1
     ses.shot("%s_%02d.png" % (prefix, shot_idx))
+    start_game(ses)                       # 标题→选职业→开局（直推 '1'）
+    shot_idx += 1
+    ses.shot("%s_%02d.png" % (prefix, shot_idx))   # 干净主界面（tile 32px + 上游图标 toolbar）
     seen_items = set()
     fail_mobs = {}
     best = {"gold": 0, "depth": 1}
@@ -194,11 +206,9 @@ def auto(rounds=20, prefix="shots/auto", walk_wait=5.0, prefer_exit=False):
         if d["hp"][0] <= 0:
             shot_idx += 1
             ses.shot("%s_%02d.png" % (prefix, shot_idx))
-            # 死亡画面点按 = 重开（走真实 LVGL 点击路径，验证 on_overlay_click_cb）
-            print("英雄阵亡（hp=%d）→ 点屏重开" % d["hp"][0])
-            ses.s.write(b"t180,180;")
-            ses.s.flush()
-            ses.wait(1.5)
+            # 死亡页直推 '1' 重开（pick_class 无条件 new_game → IN_GAME）
+            print("英雄阵亡（hp=%d）→ '1' 重开一局" % d["hp"][0])
+            ses.press("1", 1.5)
             b2 = len(ses.logs)
             ses.press("v", 0.5)
             d2 = last_dump(ses.logs[b2:])
@@ -255,9 +265,59 @@ def auto(rounds=20, prefix="shots/auto", walk_wait=5.0, prefer_exit=False):
     ses.s.close()
 
 
+def flow(prefix="shots/flow"):
+    """v0.4 场景流取证：标题 → 选职业 → 四职业逐个开局截图 → 游戏中 → 背包 →
+    菜单。全部走串口直推键（h/g/1..4/j/m），不依赖像素命中，逐页留证。"""
+    os.makedirs(os.path.dirname(prefix) or ".", exist_ok=True)
+    ses = Session()
+    print("等待开机…")
+    ses.wait(6)
+    n = 1
+    ses.press("h", 0.6)                        # 回标题
+    ses.shot("%s_%02d_title.png" % (prefix, n)); n += 1
+    ses.press("g", 0.6)                        # 进选职业
+    ses.shot("%s_%02d_class.png" % (prefix, n)); n += 1
+    for cls in ("1", "2", "3", "4"):
+        ses.press(cls, 0.8)                    # 选职业→开局（游戏页）
+        name = {"1": "warrior", "2": "mage", "3": "rogue", "4": "hunter"}[cls]
+        ses.shot("%s_%02d_game_%s.png" % (prefix, n, name)); n += 1
+        ses.press("g", 0.5)                    # 回选职业换下一个
+    ses.press("1", 0.8)                        # 固定战士继续
+    for ch in "ddwx":                          # 走几步让地图动起来
+        ses.press(ch, 0.4)
+    ses.shot("%s_%02d_ingame.png" % (prefix, n)); n += 1
+    ses.press("j", 0.6)                        # 背包网格
+    ses.shot("%s_%02d_inventory.png" % (prefix, n)); n += 1
+    ses.press("j", 0.4)                        # 关背包
+    ses.press("m", 0.6)                        # 菜单
+    ses.shot("%s_%02d_menu.png" % (prefix, n)); n += 1
+    with open(os.path.join(os.path.dirname(prefix) or ".", "flow_log.txt"),
+              "w", encoding="utf-8") as f:
+        f.write("\n".join(ses.logs))
+    print("flow 取证完成：%d 张" % (n - 1))
+    ses.s.close()
+
+
+def boot(prefix="shots/boot"):
+    """开机取证：复位后尽早截一张，拿「怎么玩」引导页（晚几秒就会被误触消掉）。"""
+    os.makedirs(os.path.dirname(prefix) or ".", exist_ok=True)
+    ses = Session()
+    ses.wait(2.5)
+    ses.shot(prefix + "_01.png")
+    ses.wait(2.0)
+    ses.shot(prefix + "_02.png")
+    ses.s.close()
+
+
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "tap":
         guided(sys.argv[3], sys.argv[2])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "boot":
+        boot("shots/boot_" + sys.argv[2] if len(sys.argv) > 2 else "shots/boot")
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "flow":
+        flow("shots/flow_" + sys.argv[2] if len(sys.argv) > 2 else "shots/flow")
         return
     if len(sys.argv) > 1 and sys.argv[1] in ("auto", "descend"):
         rounds = int(sys.argv[2]) if len(sys.argv) > 2 else 14
@@ -269,29 +329,30 @@ def main():
     ses = Session()
     print("等待开机…")
     ses.wait(6)
-    ses.shot(prefix + "_01.png")
+    ses.shot(prefix + "_01.png")          # 标题页
+    ses.press("g", 0.6)                    # 进选职业
+    ses.shot(prefix + "_01b.png")
+    start_game(ses)                        # '1' 战士开局 → IN_GAME
 
-    # A* 长途寻路：轮流点视口四角（相机跟随 → 角落不断变化 → 覆盖面大）
-    for corner in "oikuo":
-        ses.press(corner, 0.3)
+    # 点地图即 A* 寻路：轮流点视口内四个方向（相机跟随 → 目标不断变 → 覆盖大）
+    for pt in ("180,120;", "180,250;", "90,180;", "270,180;", "180,120;"):
+        ses.s.write(("t" + pt).encode()); ses.s.flush()
         ses.wait(3.0)                          # 给 A* 分帧走路留时间
-    ses.press("e", 0.5)                        # 搜索秘密门
+    ses.press("e", 0.5)                        # 搜索秘密门/陷阱
     ses.shot(prefix + "_02.png")
 
-    ses.press("j", 0.8)                        # 背包 overlay
+    ses.press("j", 0.8)                        # 背包网格 overlay
     ses.shot(prefix + "_03.png")
     ses.press("j", 0.3)                        # 关闭
 
-    for corner in "uoi":
-        ses.press(corner, 0.3)
+    for pt in ("180,120;", "200,240;"):
+        ses.s.write(("t" + pt).encode()); ses.s.flush()
         ses.wait(3.0)
     for ch in serpentine(10)[:20]:             # 补一段单格走，撞怪概率更高
         ses.press(ch, 0.22)
     ses.shot(prefix + "_04.png")
 
-    for corner in "kuo":
-        ses.press(corner, 0.3)
-        ses.wait(3.0)
+    ses.press("f", 0.4)                        # 快速装备
     ses.press("q", 0.5)                        # 等待（怪会靠近）
     ses.shot(prefix + "_05.png")
 
