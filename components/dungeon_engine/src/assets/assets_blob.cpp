@@ -93,6 +93,10 @@ bool initialize() {
     return true;
 }
 
+bool is_loaded() {
+    return s_tab != nullptr && s_part != nullptr;
+}
+
 const void* get_asset(uint32_t name_hash, uint32_t* out_size) {
     if (!s_tab || !s_part) return nullptr;
     for (uint32_t i = 0; i < s_hdr.count; i++) {
@@ -109,6 +113,10 @@ const void* get_asset(uint32_t name_hash, uint32_t* out_size) {
         }
     }
     return nullptr;
+}
+
+const void* get_asset_by_name(const char* name, uint32_t* out_size) {
+    return get_asset(fnv1a(name), out_size);
 }
 
 }  /* namespace assets */

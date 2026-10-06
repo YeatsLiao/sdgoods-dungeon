@@ -85,17 +85,29 @@ bool Level::generate(uint32_t seed) {
         }
     }
 
+    /* 装饰散布（确定性，同一 seed 同图）：部分地板长草 / 浸水 */
+    for (int i = 0; i < LENGTH; i++) {
+        if (tiles[i].terr != DG_TERR_FLOOR) continue;
+        int roll = r.nextInt(100);
+        if (roll < 8)       tiles[i].terr = DG_TERR_GRASS;
+        else if (roll < 13) tiles[i].terr = DG_TERR_WATER;
+    }
+
     /* entrance 在第一个房间中心，exit 在最后一个房间中心 */
     entrance_pos = ((rooms[0].y0 + rooms[0].y1) / 2) * DG_MAP_W
                  + ((rooms[0].x0 + rooms[0].x1) / 2);
     exit_pos     = ((rooms[room_count-1].y0 + rooms[room_count-1].y1) / 2) * DG_MAP_W
                  + ((rooms[room_count-1].x0 + rooms[room_count-1].x1) / 2);
 
-    /* 全部标记 explored（骨架不做 FOV） */
+    /* 新层视野全遮：fog 从未揭开，vis 位全清，占用/掉落指针重置 */
     for (int i = 0; i < LENGTH; i++) {
-        tiles[i].explored = 1;
-        tiles[i].vis_current = 1;
-        tiles[i].vis_seen = 1;
+        Tile& t = tiles[i];
+        t.vis_seen = 0;
+        t.vis_magical = 0;
+        t.vis_current = 0;
+        t.explored = 0;
+        t.item = nullptr;
+        t.actor = nullptr;
     }
     tiles[entrance_pos].terr = DG_TERR_ENTRY;
     tiles[exit_pos].terr = DG_TERR_EXIT;
@@ -105,8 +117,10 @@ bool Level::generate(uint32_t seed) {
 }
 
 void Level::create_mobs_and_items() {
-    /* TODO: v0.1 章节怪组；骨架版暂空 */
-    ESP_LOGI(TAG, "create_mobs_and_items: TODO");
+    /* v0.2：怪物/掉落物由 Game::spawn_level_content() 统一投放
+     *（需静态池分配权，Level 不越权持有），本钩子保留给后续
+     * 章节化地表装饰（盲盒特殊房、陷阱布点）。 */
+    ESP_LOGI(TAG, "create_mobs_and_items: delegated to Game::spawn_level_content");
 }
 
 }  /* namespace dg */

@@ -14,8 +14,9 @@
  */
 
 #include "ui_dungeon.h"
-#include "dungeon_api.h"          /* 引擎的 C ABI 边界 */
+#include "dungeon_api.h"          /* 引擎 C ABI 边界 */
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 
 static const char *TAG = "ui_dungeon";
@@ -33,6 +34,7 @@ static const char *TAG = "ui_dungeon";
 /* ---- 首屏控件句柄 ---- */
 static lv_obj_t *s_scr        = NULL;
 static lv_obj_t *s_status_lbl = NULL;
+static lv_obj_t *s_msg_lbl    = NULL;      /* 视窗下方消息行（引擎 log 最新一条） */
 static lv_obj_t *s_viewport   = NULL;      /* 主 tilemap 图 */
 static lv_obj_t *s_hotbar_btn[DG_BTN_COUNT] = {0};
 
@@ -54,8 +56,20 @@ static lv_img_dsc_t s_viewport_dsc = {
     .data         = (const uint8_t *)s_placeholder_fb,
 };
 
+/* 引擎 fb 约定：native 小端 RGB565。而本平台 LVGL 配了 LV_COLOR_16_SWAP=1
+ *（RGB 面板高字节在前，与 FACEENGINE 基线一致），TRUE_COLOR 图像数据须
+ * 按交换字节序存放。边界转换在 UI 做（引擎不感知显示字节序）；
+ * bswap32 一次换两像素，200×200 共 20K 条指令，可忽略。 */
+static void copy_fb_to_display_order(const uint32_t *src, uint32_t *dst, int words)
+{
+    for (int i = 0; i < words; i++) {
+        dst[i] = __builtin_bswap32(src[i]);
+    }
+}
+
 /* ---- 前向声明 ---- */
 static void on_hotbar_btn_cb(lv_event_t *e);
+static void on_viewport_click_cb(lv_event_t *e);
 static void paint_placeholder_checkerboard(void);
 
 /* ==================== 构建 ==================== */
@@ -77,11 +91,24 @@ void ui_dungeon_start(void)
     lv_obj_set_width(s_status_lbl, DG_SCREEN_W - 40);
     lv_obj_align(s_status_lbl, LV_ALIGN_TOP_MID, 0, 12);
 
-    /* 2. 中部主视窗 —— 200×200 的 RGB565 图 */
+    /* 2. 中部主视窗 —— 200×200 的 RGB565 图；可点击，像素坐标直接送引擎
+     *（视口像素→tile 换算在引擎内做，UI 不感知相机） */
     paint_placeholder_checkerboard();
     s_viewport = lv_img_create(s_scr);
     lv_img_set_src(s_viewport, &s_viewport_dsc);
     lv_obj_align(s_viewport, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(s_viewport, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_viewport, on_viewport_click_cb, LV_EVENT_CLICKED, NULL);
+
+    /* 2b. 消息行 —— 状态栏与视窗夹缝居中，显示引擎消息 log 最新一条 */
+    s_msg_lbl = lv_label_create(s_scr);
+    lv_label_set_text(s_msg_lbl, "");
+    lv_obj_set_style_text_color(s_msg_lbl, lv_color_hex(0xd8d0a0), LV_PART_MAIN);
+    lv_obj_align(s_msg_lbl, LV_ALIGN_TOP_MID, 0, DG_STATUS_H + 12);
+
+    /* 引擎开局：boot 即新游戏（标题/选职业界面 v0.3 补），seed 用开机时间微秒 */
+    uint32_t seed = (uint32_t)esp_timer_get_time();
+    dg_api_new_game(DG_CLASS_WARRIOR, seed);
 
     /* 3. 底部 6 颗等大圆键 —— 沿用 DOOM 白悬浮方案 */
     static const char *btn_labels[DG_BTN_COUNT] = {
@@ -134,12 +161,16 @@ void ui_dungeon_poll(void)
     /* 引擎回合状态推进（若有 pending 输入或 A* 寻路分帧） */
     dg_api_tick_if_needed();
 
-    /* 状态栏文字 500ms 刷新一次（避免 LVGL 频繁 invalidate） */
+    /* 状态栏文字 + 消息行 500ms 刷新一次（避免 LVGL 频繁 invalidate） */
     uint32_t now = lv_tick_get();
     if (now - s_last_status_ms >= 500) {
         s_last_status_ms = now;
         if (dg_api_get_status_text(s_status_buf, sizeof(s_status_buf)) > 0) {
             lv_label_set_text(s_status_lbl, s_status_buf);
+        }
+        char msg[64];
+        if (dg_api_get_message(msg, sizeof(msg), 0) > 0) {
+            lv_label_set_text(s_msg_lbl, msg);
         }
     }
 
@@ -148,7 +179,8 @@ void ui_dungeon_poll(void)
     int fb_w = 0, fb_h = 0;
     const uint16_t *fb = dg_api_get_tilemap_fb(&fb_w, &fb_h);
     if (fb && fb_w == DG_VIEWPORT_SIZE && fb_h == DG_VIEWPORT_SIZE) {
-        memcpy(s_placeholder_fb, fb, sizeof(s_placeholder_fb));
+        copy_fb_to_display_order((const uint32_t *)fb, (uint32_t *)s_placeholder_fb,
+                                 sizeof(s_placeholder_fb) / 4);
         lv_obj_invalidate(s_viewport);
     }
 }
@@ -160,6 +192,20 @@ static void on_hotbar_btn_cb(lv_event_t *e)
     int btn = (int)(intptr_t)lv_event_get_user_data(e);
     ESP_LOGI(TAG, "hotbar btn %d tapped", btn);
     dg_api_on_button((dg_btn_id_t)btn);
+}
+
+static void on_viewport_click_cb(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev || !s_viewport) return;
+    lv_point_t pt;
+    lv_indev_get_point(indev, &pt);
+    lv_area_t r;
+    lv_obj_get_coords(s_viewport, &r);
+    int px = pt.x - r.x1;
+    int py = pt.y - r.y1;
+    ESP_LOGI(TAG, "viewport tap px=(%d,%d)", px, py);
+    dg_api_on_viewport_tap(px, py);
 }
 
 /* ==================== 辅助绘制 ==================== */
@@ -192,4 +238,8 @@ static void paint_placeholder_checkerboard(void)
             }
         }
     }
+    /* 占位图同样转成 LVGL 显示字节序（引擎 fb 到来前也颜色正确） */
+    copy_fb_to_display_order((const uint32_t *)s_placeholder_fb,
+                             (uint32_t *)s_placeholder_fb,
+                             sizeof(s_placeholder_fb) / 4);
 }

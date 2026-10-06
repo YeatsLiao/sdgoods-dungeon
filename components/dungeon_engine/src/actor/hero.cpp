@@ -20,11 +20,18 @@ int Hero::act() {
 
 int Hero::attack(Actor* enemy) {
     if (!enemy) return 0;
-    /* Shattered 手感公式骨架版：命中 = 简单 roll，正式 v0.1 会照搬
+    /* Shattered 手感公式骨架版：命中 = 简单 roll，正式 v0.3 会照搬
        Hero.attackSkill(enemy) vs enemy.defenseSkill(this) + 命中判定 */
     int dmg = Game::instance().ui_rng->nextInt(4) + 2;
     enemy->damage(dmg, "hit");
-    Game::instance().log("you_hit");
+    if (!enemy->is_alive()) {
+        static const char* s_kill = "你解决了它。+2 经验。";
+        Game::instance().log(s_kill);
+        this->exp += static_cast<Mob*>(enemy)->xp_in_kill;
+    } else {
+        static const char* s_hit = "你砍中了敌人。";
+        Game::instance().log(s_hit);
+    }
     return 1;
 }
 
@@ -63,6 +70,11 @@ void Actor::damage(int dmg, const char* src) {
 
 void Actor::die() {
     if (level) {
+        /* 抹掉格子占位（存活体的 tile->actor 不变式） */
+        if (x >= 0 && x < DG_MAP_W && y >= 0 && y < DG_MAP_H) {
+            Tile& t = level->at(x, y);
+            if (t.actor == this) t.actor = nullptr;
+        }
         for (int i = 0; i < level->actor_count; i++) {
             if (level->actors[i] == this) {
                 level->actors[i] = level->actors[level->actor_count - 1];

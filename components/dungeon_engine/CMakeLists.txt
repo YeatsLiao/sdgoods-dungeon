@@ -22,6 +22,8 @@ idf_component_register(
         "src/item/item.cpp"
         "src/rng/java_random.cpp"
         "src/pathfinder/astar.cpp"
+        "src/fov/fov.cpp"
+        "src/gfx/gfx.cpp"
         "src/assets/assets_blob.cpp"
         "src/save/save.cpp"
 

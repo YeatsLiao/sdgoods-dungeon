@@ -55,3 +55,6 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # ---- Watchdog ----
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# LVGL 16bit byte order: align with platform baseline FACEENGINE (RGB panel wants high byte first; screenshot path assumes same)
+CONFIG_LV_COLOR_16_SWAP=y

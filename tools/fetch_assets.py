@@ -9,13 +9,15 @@ pack_assets.py 打成 assets.bin 烧进 assets 分区。发布时分两种通道
   * 源码仓库不含 resources/ —— 自行 build 的用户跑本脚本补齐。
 
 拉取内容（浅克隆上游仓库，只拷渲染/音频必需目录，保留相对路径）：
-    android/assets/tiles/        -> resources/tiles/        （tiles*.png 等图集）
-    android/assets/interface/    -> resources/interface/    （UI 图集）
-    android/assets/images/       -> resources/images/       （物品/状态图标）
-    android/assets/sounds/       -> resources/sounds/       （音效 mp3）
-    android/assets/music/        -> resources/music/        （BGM mp3）
-    android/assets/interactions/ -> resources/interactions/ （对话框纹理，可选）
-只取白名单扩展名（.png/.mp3），其余 Java/其他资源一概不拷。
+    core/src/main/assets/environment/  -> resources/environment/  （章节地形图集 tiles_sewers/prison/caves/city/halls.png）
+    core/src/main/assets/sprites/      -> resources/sprites/      （怪物/英雄/物品图集 rat.png rogue.png items.png…）
+    core/src/main/assets/interfaces/   -> resources/interfaces/   （UI 图集）
+    core/src/main/assets/sounds/       -> resources/sounds/       （音效 mp3/ogg）
+    core/src/main/assets/music/        -> resources/music/        （BGM mp3/ogg）
+只取白名单扩展名（.png/.mp3/.ogg），其余 Java/其他资源一概不拷。
+
+注：上游旧版（android/assets/tiles/tiles.png 时代）已重构为 libGDX 多目录结构，
+本白名单按 master（2026-10 校准）的 core/src/main/assets 布局。
 
 用法：
     python tools/fetch_assets.py                  # 默认分支 master，缓存到 .cache/upstream
@@ -40,14 +42,16 @@ ROOT = Path(__file__).resolve().parent.parent      # sdgoods-dungeon/
 CACHE = ROOT / ".cache" / "upstream"
 DEFAULT_URL = "https://github.com/00-Evan/shattered-pixel-dungeon.git"
 
+ASSETS_ROOT = "core/src/main/assets"   # 上游 libGDX 资源根（master 布局）
+
 # (上游相对目录, resources 相对目录, 扩展名白名单)
 WHITELIST = [
-    ("android/assets/tiles",        "tiles",        (".png",)),
-    ("android/assets/interface",    "interface",    (".png",)),
-    ("android/assets/images",       "images",       (".png",)),
-    ("android/assets/sounds",       "sounds",       (".mp3", ".ogg")),
-    ("android/assets/music",        "music",        (".mp3", ".ogg")),
-    ("android/assets/interactions", "interactions", (".png",)),
+    (f"{ASSETS_ROOT}/environment", "environment", (".png",)),
+    (f"{ASSETS_ROOT}/sprites",     "sprites",     (".png",)),
+    (f"{ASSETS_ROOT}/interfaces",  "interfaces",  (".png",)),
+    (f"{ASSETS_ROOT}/sounds",      "sounds",      (".mp3", ".ogg")),
+    # music 暂不拉取：全量 BGM 17.6MB 超过 assets 分区 12MB（实测 2026-10，
+    # 上游 master v4.0.1）。v0.4 做选轨 + 降码率裁剪后再纳入。
 ]
 
 

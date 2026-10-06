@@ -44,6 +44,15 @@ void dg_api_on_tap(int gx, int gy) {
     Game::instance().on_tap(gx, gy);
 }
 
+void dg_api_on_viewport_tap(int px, int py) {
+    Game& g = Game::instance();
+    if (g.scene != DG_SCENE_IN_GAME) return;
+    /* 视口像素 → 世界 tile：加当前相机左上角（渲染时维护，clamp 到图内） */
+    int gx = g.cam_x + px / DG_TILE_PX;
+    int gy = g.cam_y + py / DG_TILE_PX;
+    g.on_tap(gx, gy);
+}
+
 void dg_api_on_long_press(int gx, int gy) {
     Game::instance().on_long_press(gx, gy);
 }
@@ -81,7 +90,7 @@ dg_scene_t dg_api_current_scene(void) {
 }
 
 const char* dg_api_version(void) {
-    return "0.0.1-skeleton";
+    return "0.2.0-playable";
 }
 
 int dg_api_run_selftest(void) {

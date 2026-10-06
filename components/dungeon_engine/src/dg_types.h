@@ -213,6 +213,19 @@ public:
     const uint16_t* get_tilemap_fb(int* w, int* h);
     int  get_message(char* buf, int cap, int index);
 
+    /* v0.2 回合流与渲染 */
+    int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile（渲染时算，视口点击换算也用） */
+    int  path_queue[64];                       /* 自动寻路分步队列（packed pos） */
+    int  path_len = 0, path_head = 0;
+    uint32_t last_step_ms = 0;                 /* 自动行走分步节奏门控（ms） */
+
+    void recalc_fov();
+    bool hero_try_step(int gx, int gy);        /* 走/砍/拾取一步；成功返回 true */
+    void advance_mobs();                       /* 怪物回合（英雄行动后调） */
+    bool descend_stairs();                     /* 踩到 EXIT → 生成下一层 */
+    void spawn_level_content();                /* 本层怪物 + 掉落物（静态池） */
+    Mob* alloc_mob();
+
     /* 静态内存池（避免 heap） */
     static constexpr int kMaxMob    = 32;
     static constexpr int kMaxItem   = 64;
@@ -246,8 +259,9 @@ namespace pathfinder {
 /* ===== Assets blob reader ===== */
 namespace assets {
     bool initialize();           /* 从 raw 分区加载 offset 表 */
+    bool is_loaded();            /* 分区存在且 SDGA header 有效 */
     const void* get_asset(uint32_t name_hash, uint32_t* out_size);
-    /* v0.1 只列出接口，实现待 pack_assets.py 落地 */
+    const void* get_asset_by_name(const char* name, uint32_t* out_size);
 }
 
 /* ===== Save ===== */

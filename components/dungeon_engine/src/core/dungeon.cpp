@@ -3,20 +3,74 @@
  * Copyright (c) 2026 Yeats Liao
  * SPDX-License-Identifier: GPL-3.0-only
  *
- * dungeon.cpp —— Game 状态机核心（骨架）
+ * dungeon.cpp —— Game 状态机核心 + tile 渲染器（v0.2 可玩版）
+ *
+ * 渲染契约（与 dungeon_api.h 一致）：get_tilemap_fb 返回 200×200 RGB565
+ * PSRAM fb；fb_dirty 时重绘，否则返回 NULL 让 UI 跳帧。素材缺失
+ * （未烧 assets.bin）时 gfx::load() 失败 → 恒返 NULL，UI 保留棋盘占位。
+ *
+ * 回合流：玩家行动（走/砍/等/搜）→ 视野重算 → 全体怪物 act → 死亡/
+ * 下楼判定；自动寻路在 tick() 里按 120ms/步 分步消费，每步都是完整回合。
  */
 #include "dg_types.h"
 #include "rng/java_random.h"
+#include "gfx/gfx.h"
+#include "fov/fov.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 static const char *TAG = "dg.game";
 
 namespace dg {
 
-/* 静态内存 —— 骨架版先用 new，后续改静态池 */
+/* ===== 静态内存池（架构红线：hot path 不 heap）===== */
+static Mob    s_mob_pool[Game::kMaxMob];
+static bool   s_mob_used[Game::kMaxMob];
+static Item   s_item_pool[Game::kMaxItem];
+static bool   s_item_used[Game::kMaxItem];
+
+/* 主视窗 fb（PSRAM 常驻，200×200×2B = 80KB） */
+static uint16_t* s_fb = nullptr;
+
+/* ===== 视野半径 ===== */
+static constexpr int kFovRadius = 8;
+
+/* ===== 地形 → 图集索引 =====
+ * 常量抄自上游 core/.../tiles/DungeonTileSheet.java（WIDTH=16 列，xy 1 基）：
+ *   GROUND=xy(1,1)=0 → FLOOR=0 FLOOR_DECO=1 GRASS=2 FLOOR_SP=4 FLOOR_ALT_1=6
+ *   ENTRANCE=GROUND+16=16  EXIT=GROUND+17=17
+ *   WATER=xy(1,3)=32  FLAT_WALL=xy(1,4)=48（+1=DECO）
+ * 秘密门/关门 v0.2 以墙代画；宝箱借 PEDESTAL(20) 位。 */
+static int tile_sheet_index(const Tile& t, int x, int y) {
+    switch (t.terr) {
+    case DG_TERR_WALL:      return ((x * 7 + y * 13) % 17 == 0) ? 49 : 48;
+    case DG_TERR_EMPTY:     return -1;               /* 地图外：纯黑 */
+    case DG_TERR_FLOOR: {
+        int h = x * 7 + y * 13;
+        if (h % 13 == 0) return 6;                   /* FLOOR_ALT_1 */
+        if (h % 11 == 0) return 1;                   /* FLOOR_DECO */
+        return 0;
+    }
+    case DG_TERR_DOOR:      return 48;               /* 关着 = 墙外观（v0.2 近似） */
+    case DG_TERR_OPEN_DOOR: return 4;                /* FLOOR_SP */
+    case DG_TERR_EXIT:      return 17;
+    case DG_TERR_ENTRY:     return 16;
+    case DG_TERR_WATER:     return 32;
+    case DG_TERR_GRASS:     return 2;
+    case DG_TERR_TRAP:      return 1;
+    case DG_TERR_CHEST:     return 20;               /* PEDESTAL 借用 */
+    case DG_TERR_SECRET:    return 48;               /* 未揭露秘密门按墙画 */
+    case DG_TERR_STATUE:    return 4;
+    default:                return 0;
+    }
+}
+
+/* ===== Game ===== */
 Game::Game() {
     rng     = new JavaRandom(0);
     ui_rng  = new JavaRandom(0);
@@ -41,12 +95,92 @@ void Game::init() {
     scene = DG_SCENE_TITLE;
 }
 
+void Game::log(const char* key) {
+    log_lines[log_head] = key;
+    log_head = (log_head + 1) % kLogLines;
+}
+
+/* ===== 池分配 ===== */
+Mob* Game::alloc_mob() {
+    for (int i = 0; i < kMaxMob; i++) {
+        if (!s_mob_used[i]) { s_mob_used[i] = true; return &s_mob_pool[i]; }
+    }
+    return nullptr;
+}
+
+static Item* alloc_item() {
+    for (int i = 0; i < Game::kMaxItem; i++) {
+        if (!s_item_used[i]) { s_item_used[i] = true; return &s_item_pool[i]; }
+    }
+    return nullptr;
+}
+
+static void free_pools() {
+    memset(s_mob_used, 0, sizeof(s_mob_used));
+    memset(s_item_used, 0, sizeof(s_item_used));
+}
+
+/* ===== 本层内容投放：老鼠怪组 + 金币堆（确定性：走世界 rng） ===== */
+void Game::spawn_level_content() {
+    free_pools();
+    level->actor_count = 0;
+    level->actors[level->actor_count++] = hero;   /* actors[0] 恒为英雄 */
+    hero->level = level;
+    level->at(hero->x, hero->y).actor = hero;
+
+    JavaRandom& r = *rng;
+    int spawned = 0;
+    int tries = 0;
+    int want = 4 + depth;
+    if (want > 8) want = 8;
+    while (spawned < want && tries++ < 300) {
+        int x = r.nextInt(DG_MAP_W), y = r.nextInt(DG_MAP_H);
+        Tile& t = level->at(x, y);
+        if (!level->passable(x, y) || t.actor || t.item) continue;
+        if (level->distance(x, y, level->entrance_pos % DG_MAP_W,
+                            level->entrance_pos / DG_MAP_W) < 10) continue;
+        Mob* m = alloc_mob();
+        if (!m) break;
+        m = new (m) Mob();                        /* 池上原位构造 */
+        m->hp_max = 8; m->hp = 8;
+        m->attack_min = 1; m->attack_max = 4;
+        m->defense = 2; m->xp_in_kill = 2;
+        m->name_key = "rat";
+        m->state = Mob::SLEEPING;
+        m->level = level;
+        m->set_pos(x, y);
+        t.actor = m;
+        level->actors[level->actor_count++] = m;
+        spawned++;
+    }
+
+    int gold_spawned = 0;
+    for (tries = 0; gold_spawned < 3 && tries++ < 200; ) {
+        int x = r.nextInt(DG_MAP_W), y = r.nextInt(DG_MAP_H);
+        Tile& t = level->at(x, y);
+        if (!level->passable(x, y) || t.actor || t.item) continue;
+        Item* it = alloc_item();
+        if (!it) break;
+        it = new (it) Item();
+        it->kind = Item::K_GOLD;
+        it->qty = 10 + r.nextInt(20) + depth * 5;
+        it->name_key = "gold";
+        it->x = x; it->y = y;
+        it->on_drop(level);
+        gold_spawned++;
+    }
+    ESP_LOGI(TAG, "spawn level %d: %d rats, %d gold piles", depth, spawned, gold_spawned);
+}
+
+/* ===== 新局 / 视野 / 下楼 ===== */
 void Game::new_game(int hero_class, uint32_t seed) {
     ESP_LOGI(TAG, "Game::new_game class=%d seed=0x%08x", hero_class, seed);
     this->seed = seed;
     rng->setSeed(seed);
+    ui_rng->setSeed(seed ^ 0x5DEECE66DULL);       /* UI 杂项流，不污染世界序列 */
     game_time = 0;
     depth = 0;
+    path_len = path_head = 0;
 
     hero->cls = (dg_class_t)hero_class;
     hero->hp_max = 20; hero->hp = 20;
@@ -56,29 +190,130 @@ void Game::new_game(int hero_class, uint32_t seed) {
     level->generate(seed);
     level->depth = 0;
     level->hero = hero;
-    level->create_mobs_and_items();
 
     hero->set_pos(level->entrance_pos % DG_MAP_W,
                   level->entrance_pos / DG_MAP_W);
 
+    spawn_level_content();
+    recalc_fov();
+
     scene = DG_SCENE_IN_GAME;
     fb_dirty = true;
-    log("welcome");
+    log("欢迎来到次元地牢！点击地面移动，走到怪物旁自动攻击。");
 }
 
-void Game::tick() {
-    /* 回合调度：按 ready_at 挑最早的 Actor 行动 */
-    if (scene != DG_SCENE_IN_GAME) return;
+void Game::recalc_fov() {
+    fov::compute(level, hero->x, hero->y, kFovRadius);
+}
 
-    /* 骨架版：仅递增时间戳 + 让 Mob 依次 act */
+bool Game::descend_stairs() {
+    if (level->at(hero->x, hero->y).terr != DG_TERR_EXIT) return false;
+    depth++;
+    uint32_t s = (uint32_t)rng->nextInt();
+    level->generate(s);
+    level->depth = depth;
+    hero->set_pos(level->entrance_pos % DG_MAP_W,
+                  level->entrance_pos / DG_MAP_W);
+    path_len = path_head = 0;
+    spawn_level_content();
+    recalc_fov();
+    fb_dirty = true;
+    /* 缓冲 64B：中文消息 31B + 层数最多 11B，留足余量免 format-truncation */
+    static char s_depth_msgs[16][64];
+    snprintf(s_depth_msgs[depth % 16], sizeof(s_depth_msgs[0]),
+             "你下到了 %d 层。空气愈发恶臭……", depth + 1);
+    log(s_depth_msgs[depth % 16]);
+    ESP_LOGI(TAG, "descend -> depth %d", depth);
+    return true;
+}
+
+/* ===== 英雄一步：走 / 砍 / 拾取（成功 = 消耗一个回合） ===== */
+bool Game::hero_try_step(int gx, int gy) {
+    if (scene != DG_SCENE_IN_GAME) return false;
+    if (gx < 0 || gx >= DG_MAP_W || gy < 0 || gy >= DG_MAP_H) return false;
+    if (gx == hero->x && gy == hero->y) return false;
+
+    Tile& t = level->at(gx, gy);
+
+    /* 格子上有活物：是怪就打，是别的就止步 */
+    if (t.actor && t.actor != hero) {
+        if (t.actor->alignment == 1 /* ENEMY */ || t.actor->alignment == 0) {
+            hero->attack(t.actor);
+            return true;
+        }
+        return false;
+    }
+    if (t.actor == hero) return false;
+
+    if (!level->passable(gx, gy)) return false;
+
+    /* 移动 */
+    level->at(hero->x, hero->y).actor = nullptr;
+    hero->set_pos(gx, gy);
+    t.actor = hero;
     game_time++;
-    for (int i = 0; i < level->actor_count; i++) {
+
+    /* 自动拾取 */
+    if (t.item) {
+        Item* it = t.item;
+        if (it->kind == Item::K_GOLD) {
+            hero->gold += it->qty;
+            static char s_gold_msgs[8][64];
+            snprintf(s_gold_msgs[game_time % 8], sizeof(s_gold_msgs[0]),
+                     "拾取 %d 金币。（合计 %d）", it->qty, hero->gold);
+            log(s_gold_msgs[game_time % 8]);
+            int idx = (int)(it - s_item_pool);
+            if (idx >= 0 && idx < kMaxItem) { s_item_used[idx] = false; }
+            t.item = nullptr;
+        } else if (hero->pickup(it)) {
+            t.item = nullptr;
+        }
+    }
+    return true;
+}
+
+/* ===== 怪物回合 ===== */
+void Game::advance_mobs() {
+    for (int i = 1; i < level->actor_count; i++) {
         Actor* a = level->actors[i];
         if (!a || !a->is_alive()) continue;
-        if ((int32_t)(game_time - a->ready_at) < 0) continue;
-        int spend = a->act();
-        if (spend > 0) a->ready_at = game_time + spend;
+        a->act();
     }
+    /* 收割尸体（act 里可能同归于尽） */
+    for (int i = level->actor_count - 1; i >= 1; i--) {
+        Actor* a = level->actors[i];
+        if (a && !a->is_alive()) {
+            level->actors[i] = level->actors[level->actor_count - 1];
+            level->actors[--level->actor_count] = nullptr;
+        }
+    }
+    if (hero->hp <= 0) {
+        scene = DG_SCENE_GAME_OVER;
+        log("你死了……按电源键重开或等待存档结算。");
+        ESP_LOGW(TAG, "hero died at depth %d", depth);
+    }
+}
+
+/* ===== 输入 ===== */
+void Game::tick() {
+    if (scene != DG_SCENE_IN_GAME) return;
+    if (path_head >= path_len) return;            /* 无自动行走任务 */
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (now_ms - (int64_t)last_step_ms < 120) return;
+    last_step_ms = (uint32_t)now_ms;
+
+    int p = path_queue[path_head++];
+    int gx = p % DG_MAP_W, gy = p / DG_MAP_W;
+    if (!hero_try_step(gx, gy)) {
+        path_len = path_head = 0;                 /* 被打断/不可达：停车 */
+        fb_dirty = true;
+        return;
+    }
+    if (descend_stairs()) return;
+    recalc_fov();
+    advance_mobs();
+    if (path_head >= path_len) { path_len = path_head = 0; }
     fb_dirty = true;
 }
 
@@ -89,58 +324,163 @@ void Game::on_tap(int gx, int gy) {
     int dx = gx - hero->x, dy = gy - hero->y;
     int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
 
-    if (adx <= 1 && ady <= 1 && (adx || ady)) {
-        /* 相邻 8 格 → 走一步 / 攻击 */
-        Tile& t = level->at(gx, gy);
-        if (t.actor && t.actor->alignment == 1 /* ENEMY */) {
-            hero->attack(t.actor);
-        } else if (level->passable(gx, gy)) {
-            hero->set_pos(gx, gy);
-        }
-        fb_dirty = true;
+    bool acted = false;
+    if (adx <= 1 && ady <= 1) {
+        /* 相邻 8 格（含原地）→ 走一步 / 攻击 */
+        acted = hero_try_step(gx, gy);
     } else {
-        /* 远处 → A* 走一步（骨架：一步后停止；实际应存 path queue） */
+        /* 远处 → A* 整条路径入队，本帧先走第一步 */
         int steps[64];
         int n = pathfinder::find_path(level, hero->x, hero->y, gx, gy, steps, 64);
         if (n > 0) {
-            int nx = steps[0] % DG_MAP_W, ny = steps[0] / DG_MAP_W;
-            hero->set_pos(nx, ny);
-            fb_dirty = true;
+            memcpy(path_queue, steps, n * sizeof(int));
+            path_len = n;
+            path_head = 1;
+            int64_t now_ms = esp_timer_get_time() / 1000;
+            last_step_ms = (uint32_t)now_ms;
+            acted = hero_try_step(steps[0] % DG_MAP_W, steps[0] / DG_MAP_W);
+            if (!acted) { path_len = path_head = 0; }
+        } else {
+            log("那里过不去。");
+            acted = false;
         }
+    }
+
+    if (acted) {
+        if (descend_stairs()) return;
+        recalc_fov();
+        advance_mobs();
+        fb_dirty = true;
     }
 }
 
 void Game::on_long_press(int gx, int gy) {
     ESP_LOGD(TAG, "inspect (%d,%d)", gx, gy);
-    /* TODO: 弹检视卡 */
+    /* TODO: 弹检视卡（不耗回合） */
 }
 
 void Game::on_button(dg_btn_id_t btn) {
     ESP_LOGI(TAG, "button %d", (int)btn);
     switch (btn) {
     case DG_BTN_WAIT:
-        /* 原地等 1 回合 */
+        if (scene != DG_SCENE_IN_GAME) break;
         game_time++;
+        recalc_fov();
+        advance_mobs();
+        fb_dirty = true;
+        break;
+    case DG_BTN_SEARCH:
+        if (scene != DG_SCENE_IN_GAME) break;
+        log("你环顾四周，什么也没发现。（秘密门 v0.3）");
         break;
     case DG_BTN_INVENTORY:
         scene = (scene == DG_SCENE_INVENTORY) ? DG_SCENE_IN_GAME : DG_SCENE_INVENTORY;
+        fb_dirty = true;
+        break;
+    case DG_BTN_MENU:
+        log("菜单将在 v0.3 提供（存档槽位 / 重开）。");
         break;
     default:
         break;
     }
 }
 
-int Game::get_status_text(char *buf, int cap) {
-    if (scene != DG_SCENE_IN_GAME) return 0;
-    return snprintf(buf, cap, "HP %d/%d  Depth:%dF  Lv %d  Gold:%d",
-                    hero->hp, hero->hp_max, depth + 1, hero->lvl, hero->gold);
+/* ===== 渲染（pull model 出口） ===== */
+static void render_map(Game& g) {
+    const int W = DG_VIEWPORT_W, H = DG_VIEWPORT_H;
+    Level* lv = g.level;
+    Hero* h = g.hero;
+
+    /* 相机：英雄居中并 clamp（右侧留半格余量 → 13 列绘制覆盖 200px） */
+    g.cam_x = h->x - (DG_VIEW_TILE_W / 2);
+    g.cam_y = h->y - (DG_VIEW_TILE_H / 2);
+    if (g.cam_x < 0) g.cam_x = 0;
+    if (g.cam_y < 0) g.cam_y = 0;
+    if (g.cam_x > DG_MAP_W - DG_VIEW_TILE_W) g.cam_x = DG_MAP_W - DG_VIEW_TILE_W;
+    if (g.cam_y > DG_MAP_H - DG_VIEW_TILE_H) g.cam_y = DG_MAP_H - DG_VIEW_TILE_H;
+
+    const uint16_t* sheet     = gfx::tile_sheet();
+    const uint16_t* sheet_dim = gfx::tile_sheet_dim();
+
+    for (int py = 0; py < DG_VIEW_TILE_H + 1; py++) {
+        for (int px = 0; px < DG_VIEW_TILE_W + 1; px++) {
+            int wx = g.cam_x + px, wy = g.cam_y + py;
+            int dx = px * DG_TILE_PX, dy = py * DG_TILE_PX;
+            if (wx >= DG_MAP_W || wy >= DG_MAP_H) {
+                gfx::fill_rect(s_fb, W, H, dx, dy, DG_TILE_PX, DG_TILE_PX, 0x0000);
+                continue;
+            }
+            Tile& t = lv->at(wx, wy);
+            int idx = tile_sheet_index(t, wx, wy);
+            if (idx < 0) {
+                gfx::fill_rect(s_fb, W, H, dx, dy, DG_TILE_PX, DG_TILE_PX, 0x0000);
+            } else if (t.vis_current) {
+                gfx::blit(s_fb, W, H, dx, dy, sheet, 256,
+                          (idx % 16) * DG_TILE_PX, (idx / 16) * DG_TILE_PX,
+                          DG_TILE_PX, DG_TILE_PX);
+            } else if (t.explored) {
+                gfx::blit(s_fb, W, H, dx, dy, sheet_dim, 256,
+                          (idx % 16) * DG_TILE_PX, (idx / 16) * DG_TILE_PX,
+                          DG_TILE_PX, DG_TILE_PX);
+            } else {
+                gfx::fill_rect(s_fb, W, H, dx, dy, DG_TILE_PX, DG_TILE_PX, 0x0000);
+            }
+        }
+    }
+
+    /* 覆盖层 1：可见格掉落物（金币 6×6 色块，v0.3 换 items.png 真精灵） */
+    for (int py = 0; py < DG_VIEW_TILE_H + 1; py++) {
+        for (int px = 0; px < DG_VIEW_TILE_W + 1; px++) {
+            int wx = g.cam_x + px, wy = g.cam_y + py;
+            if (wx >= DG_MAP_W || wy >= DG_MAP_H) continue;
+            Tile& t = lv->at(wx, wy);
+            if (!t.vis_current) continue;
+            if (t.item) {
+                gfx::fill_rect(s_fb, W, H, px * DG_TILE_PX + 5, py * DG_TILE_PX + 7,
+                               6, 5, 0xFEA0);      /* 金色 */
+            } else if (t.actor && t.actor != h) {
+                /* 覆盖层 2：怪物（rat 帧 0，16×16，黑透明） */
+                if (gfx::rat_sheet()) {
+                    gfx::blit_masked(s_fb, W, H, px * DG_TILE_PX, py * DG_TILE_PX,
+                                     gfx::rat_sheet(), 256, 0, 0, 16, 16);
+                }
+            }
+        }
+    }
+
+    /* 英雄本体：rogue 图集 idle 帧 (1,0) 12×15（HeroSprite FRAME 常量） */
+    if (gfx::hero_sheet()) {
+        int hx = (h->x - g.cam_x) * DG_TILE_PX + 2;
+        int hy = (h->y - g.cam_y) * DG_TILE_PX + 1;
+        gfx::blit_masked(s_fb, W, H, hx, hy, gfx::hero_sheet(), 256, 1, 0, 12, 15);
+    }
 }
 
 const uint16_t* Game::get_tilemap_fb(int *w, int *h) {
     if (w) *w = DG_VIEWPORT_W;
     if (h) *h = DG_VIEWPORT_H;
-    /* TODO: 从 level->tiles + sprite atlas 渲染到内部 fb；本骨架返 NULL */
-    return nullptr;
+
+    if (!gfx::load()) return nullptr;             /* 无素材：回退棋盘占位 */
+    if (!s_fb) {
+        s_fb = (uint16_t*)heap_caps_malloc(DG_VIEWPORT_W * DG_VIEWPORT_H * 2,
+                                           MALLOC_CAP_SPIRAM);
+        if (!s_fb) { ESP_LOGE(TAG, "fb alloc fail"); return nullptr; }
+        memset(s_fb, 0, DG_VIEWPORT_W * DG_VIEWPORT_H * 2);
+        fb_dirty = true;
+    }
+    if (scene != DG_SCENE_IN_GAME && scene != DG_SCENE_INVENTORY) {
+        return fb_dirty ? s_fb : nullptr;
+    }
+    if (!fb_dirty) return nullptr;
+    render_map(*this);
+    fb_dirty = false;
+    return s_fb;
+}
+
+int Game::get_status_text(char *buf, int cap) {
+    if (scene < DG_SCENE_IN_GAME) return 0;
+    return snprintf(buf, cap, "HP %d/%d  Depth:%dF  Lv %d  Gold:%d",
+                    hero->hp, hero->hp_max, depth + 1, hero->lvl, hero->gold);
 }
 
 int Game::get_message(char *buf, int cap, int index) {
@@ -149,11 +489,6 @@ int Game::get_message(char *buf, int cap, int index) {
     const char* key = log_lines[from];
     if (!key) return 0;
     return snprintf(buf, cap, "%s", key);
-}
-
-void Game::log(const char* key) {
-    log_lines[log_head] = key;
-    log_head = (log_head + 1) % kLogLines;
 }
 
 }  /* namespace dg */

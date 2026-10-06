@@ -105,6 +105,12 @@ void dg_api_tick_if_needed(void);
  * 若点击在玩家相邻 8 格 → 走/砍；若点击远处 → A* 寻路；若点击物品格 → 拾取。 */
 void dg_api_on_tap(int gx, int gy);
 
+/* 用户点击主视窗像素坐标（px, py，范围 [0,DG_VIEWPORT_W)×[0,DG_VIEWPORT_H)）。
+ * 相机左上角 tile 是引擎内部状态（会随英雄移动），故视口像素→tile 的换算
+ * 必须由引擎做，UI 层不感知相机 —— v0.2 新增，坐标系见 DESIGN.md §6。
+ * 推荐 UI 用本接口，dg_api_on_tap 保留给调试/脚本直推 tile 用。 */
+void dg_api_on_viewport_tap(int px, int py);
+
 /* 长按 tile：弹检视卡（不消耗回合）。 */
 void dg_api_on_long_press(int gx, int gy);
 

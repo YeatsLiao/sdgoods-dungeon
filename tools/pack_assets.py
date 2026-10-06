@@ -38,6 +38,16 @@ kind 推断规则（无 manifest 时，按扩展名 + 路径前缀）：
 例如 "tiles.png"、"interface.png"、"sounds/zh/impossible.mp3"。
 运行时 C++ 侧用同一规则算 hash 查表，故目录结构即命名空间。
 
+预烘焙（v0.2 架构决策：ESP32 侧不做 PNG 解码，零解码依赖）：
+    BAKE_MAP 里的源图在打包时用 Pillow 转成自定义 RGB565 裸镜像，
+    以新名字（kind=1 sprite）追加进同一张 SDGA。容器格式（与
+    components/dungeon_engine/src/gfx/gfx.cpp 严格对偶，改动需双侧同步）：
+        magic   4B  "RGB5"
+        width   2B  uint16 LE
+        height  2B  uint16 LE
+        pixels  w*h*2 字节，RGB565 小端（与 LVGL TRUE_COLOR 同序）
+    Pillow 不可用时跳过烘焙只出原图条目（引擎自动回退棋盘占位）。
+
 版权红线：resources/ 下的 Shattered 素材受 CC-BY-SA 4.0 保护，
 署名清单见仓库根 ATTRIBUTION.txt；本脚本产物 assets.bin 不提交进 git
 （.gitignore 已排除），随固件 full.bin 一起以 GPL/CC-BY-SA 整体分发。
@@ -47,6 +57,11 @@ import csv
 import struct
 import sys
 from pathlib import Path
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -63,6 +78,28 @@ KIND_PNG_ATLAS, KIND_SPRITE, KIND_SOUND, KIND_MUSIC = 0, 1, 2, 3
 KIND_FONT, KIND_PROPERTIES, KIND_JSON = 4, 5, 6
 KIND_NAME = {0: "png_atlas", 1: "sprite", 2: "sound", 3: "music",
              4: "font", 5: "properties", 6: "json"}
+
+# 预烘焙表：源 png -> 烘焙产物名（kind=1，内容为 RGB5 容器）。
+# 引擎 gfx.cpp 按这些名字查 hash 表；新增图集时两侧同步。
+BAKE_MAP = {
+    "environment/tiles_sewers.png": "tiles/sewers.rgb565",   # 256×256 地形图集（第 1 章下水道）
+    "sprites/rat.png":              "sprites/rat.rgb565",    # 256×64  怪物帧图（第 0 帧=idle）
+    "sprites/rogue.png":            "sprites/hero.rgb565",   # 256×128 英雄帧图（idle 帧在 (1,0) 12×15）
+}
+
+
+def bake_rgb565(png_bytes):
+    """PNG 字节 -> RGB5 容器字节（RGBA 直转 565，丢弃 alpha 合成到黑底）。"""
+    import io
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    w, h = img.size
+    rgba = img.tobytes()
+    out = bytearray(b"RGB5" + struct.pack("<HH", w, h))
+    for i in range(0, w * h * 4, 4):
+        r, g, b = rgba[i], rgba[i + 1], rgba[i + 2]
+        out += struct.pack("<H", ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3))
+    return bytes(out)
+
 
 
 def fnv1a(s: str) -> int:
@@ -124,6 +161,8 @@ def main():
                     help="输出镜像（默认 build_assets/assets.bin）")
     ap.add_argument("--manifest", default=None,
                     help="可选 CSV：kind,name[,path]，覆盖扩展名推断")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="按路径前缀排除（如 music/），可多次）")
     args = ap.parse_args()
 
     root = Path(args.resources)
@@ -132,8 +171,24 @@ def main():
                  "  骨架阶段可先 mkdir resources 放测试 png；正式素材见 README『素材管线』一节。")
 
     items = collect(root, Path(args.manifest) if args.manifest else None)
+    if args.exclude:
+        before = len(items)
+        items = [it for it in items
+                 if not any(it[1].startswith(p) for p in args.exclude)]
+        print(f"· --exclude 过滤掉 {before - len(items)} 个条目")
     if not items:
         sys.exit(f"✗ {root} 为空，没有可打包的素材")
+
+    # 预烘焙：源图存在才烘，Pillow 缺失时告警不阻断（引擎回退棋盘占位）
+    if Image is not None:
+        by_name = {name: data for _, name, data in items}
+        for src, baked in BAKE_MAP.items():
+            if src in by_name:
+                items.append((KIND_SPRITE, baked, bake_rgb565(by_name[src])))
+                print(f"· 烘焙 {src} -> {baked} ({len(items[-1][2])/1024:.0f} KB)")
+    else:
+        print("⚠ 未安装 Pillow，跳过 RGB565 预烘焙 —— 引擎将无真实贴图！"
+              "（pip install pillow）")
 
     # 名字 hash 冲突检测（FNV-1a 32 位，千级条目撞概率极低，但撞了必须 fail）
     seen = {}
