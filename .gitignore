@@ -46,6 +46,7 @@ __pycache__/
 # ---- 临时日志 / 抓包产物 ----
 *.log
 *.tmp
+monitor_log.txt
 
 # ---- 串口截屏产物 ----
 shot_*.jpg
