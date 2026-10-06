@@ -1,0 +1,32 @@
+NOTICE
+======
+
+sdgoods-dungeon · 次元地牢
+Copyright (c) 2026 Yeats Liao
+
+本作品的授权分层：
+
+  * 代码部分（main/, components/dungeon_engine/, tools/ 中本项目原创文件）
+    → GPL-3.0-only（见 LICENSE）
+
+  * 素材部分（assets_src/, pack 到 assets.bin 中的 PNG / mp3 / properties）
+    → CC-BY-SA-4.0（见 LICENSE-ASSETS 与 ATTRIBUTION.txt）
+    → 授权人：00-Evan (Shattered PD) + Watabou (原 PD) + Kenney.nl + 中文翻译社区
+
+  * 平台层（components/bsp/, components/control_center/）
+    → Apache-2.0（Copyright SDGOODS）
+    → 从 https://github.com/SDGOODS/SDGOODS-ESP32S3 抽取
+
+叠甲声明：
+
+  1. 本作品是「独立游戏固件」，**不**属于 SDGOODS 官方产品线；SDGOODS
+     品牌与谷仓次元屏硬件仅作为本项目运行平台使用。
+  2. 本作品与任天堂、SEGA、id Software 等主机/PC 厂商无任何关联。
+  3. 本作品与 Shattered Pixel Dungeon 官方无关联，仅使用其 CC-BY-SA
+     授权素材，未获得官方 endorsement。
+  4. 本作品**不**内置任何商业 ROM / WAD 文件；若用户自行导入合法备份，
+     责任由用户自负。
+  5. 本项目按 GPL-3.0 开源，任何再分发必须携带完整源码、LICENSE、
+     LICENSE-ASSETS、ATTRIBUTION.txt、NOTICE 五个文件。
+
+分发时请保持上述五个文件与本 NOTICE 内容一致。

@@ -1,0 +1,46 @@
+                    GNU GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+ Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+                            [ PREAMBLE ]
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+                            [ TERMINATION & OTHER ]
+
+Additional Terms per GPL-3.0 § 7(b):
+  * 本仓库中的代码为「次元地牢」独立游戏固件的原创部分（main/ 与
+    components/dungeon_engine/）。
+  * 上游 Shattered Pixel Dungeon 代码不作为文件级衍生直接引入，本项目
+    仅将其作为行为规格参考（读 Java 类 → 用 C++ 重写等价逻辑）。任何
+    被确认为直接文件级拷贝的改动，需在源文件头注释显式声明
+    "Derived from Shattered Pixel Dungeon (c) 00-Evan"。
+  * 素材（PNG / mp3 / properties）见 LICENSE-ASSETS 与 ATTRIBUTION.txt，
+    遵循 CC-BY-SA 4.0，独立于本 GPL-3.0 代码授权。
+
+                             HOW TO APPLY
+
+任何贡献到本仓库的 .c/.cpp/.h 文件应在文件头添加：
+
+  /*
+   * sdgoods-dungeon · 次元地牢
+   * Copyright (c) 2026 <author>
+   * SPDX-License-Identifier: GPL-3.0-only
+   */
+
+完整 GPL-3.0 条款以 gnu.org 官方版本为准：
+  https://www.gnu.org/licenses/gpl-3.0.txt

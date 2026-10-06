@@ -1,0 +1,28 @@
+Attribution-ShareAlike 4.0 International (CC-BY-SA-4.0)
+
+本仓库中位于 assets_src/ 或经 tools/pack_assets.py 打进 assets.bin 的
+所有美术 / 音频 / 字体 / 文本资源文件，均以 CC-BY-SA-4.0 授权分发。
+
+完整条款：
+  https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+概要（法律文本以官方英文版本为准）：
+
+你可以自由地：
+  * 复制和再分发材料
+  * 修改、转换，并以素材为基础进行创作
+  * 用于商业目的
+
+前提是你必须：
+  * 给出适当的署名（见 ATTRIBUTION.txt）
+  * 提供指向本许可协议的链接
+  * 说明是否对原始材料做过修改
+  * 若你再混合、转换或以素材为基础创作，你必须使用**相同**的 CC-BY-SA 4.0
+    许可分发你的贡献
+
+具体到本项目：
+  * 从 Shattered Pixel Dungeon 原仓库直接拷贝的 PNG / mp3 / .properties
+    文件，授权人是 00-Evan 及其上游贡献者
+  * 项目自制的衍生素材（若存在），授权人是本项目作者
+  * 任何再分发（GitHub Release、谷仓商店包、二次派生）必须一并携带
+    ATTRIBUTION.txt 与本文件

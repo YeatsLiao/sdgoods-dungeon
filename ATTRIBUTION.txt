@@ -1,0 +1,71 @@
+ATTRIBUTION · 署名清单
+======================
+
+本作品「次元地牢 / sdgoods-dungeon」使用了下列上游项目的开源素材，
+遵循 CC-BY-SA-4.0 / CC0 / Apache-2.0 等各自协议。此处一并致谢。
+
+
+1. Shattered Pixel Dungeon
+   ---------------------------------
+   项目主页：https://shatteredpixel.com/
+   源码仓库：https://github.com/00-Evan/shattered-pixel-dungeon
+   作者    ：00-Evan (Evan Debenham)
+   用途    ：本作品的美术素材（tiles.png / interface.png / items.png /
+             characters.png / effects.png / statusbar.png / environment/*）、
+             音效素材（sounds/*.mp3）、音乐素材（music/*.mp3）、
+             简体中文文本（messages/messages_zh.properties）
+   许可    ：代码 GPL-3.0；素材 CC-BY-SA-4.0
+   备注    ：本作品**不直接分发** Shattered PD 的代码，仅将其 Java 类
+             作为行为规格参考，游戏逻辑用 C++ 重写；素材文件按 CC-BY-SA-4.0
+             完整保留原作者署名。
+
+2. Pixel Dungeon（Watabou 原版）
+   ---------------------------------
+   项目主页：http://www.watabou.com/
+   源码仓库：https://github.com/watabou/pixel-dungeon
+   作者    ：Tyler Lin (Watabou)
+   用途    ：Shattered PD 的美术基础源自 Watabou 原版；本项目通过
+             Shattered PD 间接引用其素材
+   许可    ：代码 GPL-3.0；素材 CC-BY-SA-3.0（由 Shattered PD 升级到 CC-BY-SA-4.0）
+
+3. Kenney.nl（部分音效 / UI 元素）
+   ---------------------------------
+   项目主页：https://kenney.nl/
+   用途    ：Shattered PD 中若干音效与 UI 元素来自 Kenney 免费包
+   许可    ：CC0 1.0 Universal
+
+4. 中文本地化贡献者
+   ---------------------------------
+   来源    ：Shattered PD 官方 zh-hans 翻译
+   文件    ：core/src/main/assets/messages/messages_zh.properties
+   贡献者  ：Shattered PD 中文翻译社区（贡献者列表见上游 repo
+             https://github.com/00-Evan/shattered-pixel-dungeon/blob/master/CREDITS.md）
+   许可    ：CC-BY-SA-4.0
+
+5. ESP-IDF & lvgl
+   ---------------------------------
+   ESP-IDF：Apache-2.0，Copyright Espressif Systems
+   LVGL   ：MIT，Copyright Gabor Kiss-Vamosi and contributors
+   用途    ：本项目运行时依赖
+
+6. 谷仓 SDGOODS 平台层（bsp + control_center）
+   ---------------------------------
+   源码仓库：https://github.com/SDGOODS/SDGOODS-ESP32S3
+   Copyright (c) 2026 深圳希德创新网络有限公司 (SDGOODS)
+   许可    ：Apache-2.0
+   用途    ：板级支持包（ST77916 屏 / CST816 触摸 / I2S 音频 / QMI8658 IMU /
+             电源键 / 电池 / 蓝牙）与控制中心 UI（音量、亮度、电量、开关机）
+   备注    ：本项目在 components/bsp/ 与 components/control_center/ 目录
+             保留了这些代码的副本，遵循其 Apache-2.0 授权头
+
+7. 像素字体
+   ---------------------------------
+   本项目中文字体子集若使用开源像素字体，来源为：
+   Fusion Pixel（CPFH / 缝合怪怪）· SIL Open Font License 1.1
+   https://github.com/TakWolf/fusion-pixel-font
+   Copyright (c) Fusion Pixel contributors
+
+──────────────────────────────────────────────────────────
+
+若你认为本作品对你的贡献署名不完整或有误，请提 Issue：
+  https://github.com/YeatsLiao/sdgoods-dungeon/issues

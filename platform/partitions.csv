@@ -1,0 +1,37 @@
+# Name,      Type, SubType,  Offset,     Size,       Flags
+# ============================================================================
+# 本机构建自带分区表 —— 独立单应用「次元地牢」整机固件（SINGLE）
+# ----------------------------------------------------------------------------
+# 本仓库是独立游戏固件，不走平台多应用安装链路，分区表由本工程自己定义。
+# 与 sdgoods-doom 的差异：
+#   * factory 从 2MB 扩到 4MB —— Shattered 移植的 C++ 逻辑体量约 8-10k LOC
+#   * 新增独立 assets raw 分区 —— 12MB 装全量 Shattered 素材（PNG + mp3 + 字体 blob）
+#   * 新增独立 save NVS 分区 —— 256KB 存 3 槽位游戏存档，与系统 nvs 分开，防止互相冲掉
+#   * 保留 storage FAT —— 512KB 用户 mod / 截图导出，可选
+#
+# ⚠ gen_esp32part.py 不支持数据行的行尾注释（会被当作 Flags 列解析报错），
+#   各行用途说明全部写在这里，数据列保持干净六列。
+#
+#   nvs      24KB  系统 NVS（配网/时区/音量/亮度）
+#   phy_init  4KB  WiFi/BT PHY 校准
+#   factory  4MB   固件本体（engine + LVGL + UI），单应用直启
+#   assets  12MB   —— 自定义子类型 0x40（CSV 不认识 "raw" 关键字，只认枚举/数字），
+#                    装 Shattered 全量素材 SDGA blob + offset 表，pack_assets.py 产物 @0x410000
+#   save    256KB  NVS —— 游戏存档 3 槽位（命名空间 dgsave，与系统 nvs 隔离）
+#   storage 512KB  FAT —— 用户 mod / 截图导出，可选
+#
+# 运行侧约定（代码按此查找，与绝对偏移无关）：
+#   * assets_blob.cpp 按分区名 "assets" + 编译期生成的 offset 表读素材
+#   * save.cpp 按分区名 "save" + NVS 命名空间 "dgsave" 读写存档
+#   * 下拉栏（control_center）只读运行分区镜像头算 Size + 用 NVS 'sdg_cc'，
+#     不碰 assets / save 分区，换表无影响
+#
+# 若要回平台多应用/商店布局，用官方 prebuilt 分区表覆盖即可（本表只服务单体分发）。
+# ============================================================================
+# 分区总量约 21MB / 32MB flash，剩余 ~11MB 留给未来 OTA / 内容扩展
+nvs,         data, nvs,      0x9000,     0x6000,
+phy_init,    data, phy,      0xF000,     0x1000,
+factory,     app,  factory,  0x10000,    0x400000,
+assets,      data, 0x40,     0x410000,   0xC00000,
+save,        data, nvs,      0x1010000,  0x40000,
+storage,     data, fat,      0x1050000,  0x80000,
