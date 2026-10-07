@@ -228,27 +228,43 @@ int Hero::attack(Actor* enemy)
     if (str > req) dmg += rndIntRange(g.ui_rng, 0, str - req);     /* exStr 力量盈余 */
     if (equipped_ring && equipped_ring->sub == RG_MIGHT) dmg += 2;
 
-    enemy->damage(dmg, "hero");
+    /* 近战附魔 proc（M4）：雷电加额外伤害，吸血按伤害回血，烈焰/寒冰上 buff */
+    int8_t ench = equipped_weapon ? equipped_weapon->enchant : EN_NONE;
+    int extra = (ench == EN_SHOCKING) ? rndIntRange(g.ui_rng, 1, 6) : 0;
+    enemy->damage(dmg + extra, "hero");
+    if (ench == EN_BLAZING && m->is_alive())      m->add_buff(Buff::BURNING, 6);
+    if (ench == EN_CHILLING && m->is_alive())     m->add_buff(Buff::SLOW, 8);
+    if (ench == EN_VAMPIRIC) {
+        int heal = (dmg + extra) / 3;
+        if (heal > 0) { hp += heal; if (hp > hp_max) hp = hp_max; g.add_float(x, y, "+V", 0x7E00); }
+    }
 
     if (!m->is_alive()) {
-        int xp = m->xp_in_kill;
-        exp += xp;
         g.sfx(DG_SFX_KILL);
-        while (exp >= maxExp()) {
-            exp -= maxExp();
-            lvl++;
-            hp_max += 5; hp += 5;
-            str += 1; attack_skill += 2; defense_skill += 1;
-            char buf[16];
-            snprintf(buf, sizeof(buf), "LV%d", lvl);
-            g.add_float(x, y, buf, C_LEVEL);
-            g.sfx(DG_SFX_LEVELUP);
-            char msg[64];
-            snprintf(msg, sizeof(msg), "你升到了 %d 级！力量 %d，生命 %d。", lvl, str, hp_max);
-            g.log(msg);
-        }
+        gainExp(m->xp_in_kill);
     }
     return 1;
+}
+
+/* 经验 + 升级结算（击杀与经验药水共用）*/
+void Hero::gainExp(int n)
+{
+    if (n <= 0) return;
+    Game& g = Game::instance();
+    exp += n;
+    while (exp >= maxExp()) {
+        exp -= maxExp();
+        lvl++;
+        hp_max += 5; hp += 5;
+        str += 1; attack_skill += 2; defense_skill += 1;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "LV%d", lvl);
+        g.add_float(x, y, buf, C_LEVEL);
+        g.sfx(DG_SFX_LEVELUP);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "你升到了 %d 级！力量 %d，生命 %d。", lvl, str, hp_max);
+        g.log(msg);
+    }
 }
 
 /* 护甲减伤掷骰（在真正掉血之前吞掉一层） */
@@ -335,12 +351,11 @@ bool Hero::equip(Item* it)
     else if (it->kind == Item::K_RING)   { slot = &equipped_ring;   which = EQ_RING; }
     else { g.sfx(DG_SFX_ERROR); return false; }
 
-    if (*slot) {
-        if ((*slot)->equipped == which) { g.sfx(DG_SFX_ERROR); return false; }
-        (*slot)->equipped = EQ_NONE;
-    }
+    if (*slot == it) { g.sfx(DG_SFX_ERROR); return false; }   /* 重复装备同一件 = no-op */
+    if (*slot) (*slot)->equipped = EQ_NONE;                    /* 换装：旧件自动卸下（对齐上游）*/
     *slot = it;
     it->equipped = which;
+    if (it->kind == Item::K_RING) g.mark_identified(it->kind, it->sub);  /* 戴上即鉴定戒指 */
     if (it->cursed) {
         if (it->kind == Item::K_RING) {
             /* 诅咒戒指摘不下来：直接把旧的那件也焊死在身上 */

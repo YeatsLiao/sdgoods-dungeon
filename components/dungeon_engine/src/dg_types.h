@@ -141,6 +141,7 @@ public:
     bool unequip(Item* it);
     bool use(int slot);
     void drop(int slot);
+    void gainExp(int n);          /* 经验 + 升级结算（击杀 / 经验药水共用）*/
 
     int  maxExp() const { return 5 + lvl * 5; }
     /* 命中 / 闪避要把戒指加成算进去，所以不在头文件里内联（RG_* 枚举属于
@@ -200,6 +201,7 @@ public:
     int16_t     str_req = 0;       /* 力量需求 */
     uint8_t     cursed = 0;        /* 诅咒（读卷轴 / 使用才显现） */
     uint8_t     equipped = 0;      /* 0 背包 1 武器 2 护甲 3 戒指 */
+    int8_t      enchant = 0;       /* 近战附魔（WeaponEnchant：0 无…），高档武器随机带上 */
     const char* name = nullptr;    /* 中文名（item_def 静态表） */
 
     bool is_equipment() const {
@@ -290,6 +292,22 @@ public:
     int  debug_dump(char* buf, int cap);
     int  hero_buffs(char* buf, int cap);   /* 英雄生效 buff 列表（取证） */
     void debug_m3_selftest();              /* M3 怪物 AI / 首领机制自检（取证，串口 'k'）*/
+    void debug_m4_selftest();              /* M4 物品全谱自检（取证，串口 'p'）*/
+
+    /* 鉴定系统：药水/卷轴/戒指/法杖按 (kind,sub) 全局鉴定一次，之后所有同类都显示真名。
+     * 装备（武器/护甲）恒已知。bit 索引 = kind，位 = sub（各类型变体数 ≤8）。*/
+    uint8_t ident_bits[6] = {0};
+    bool is_identified(int kind, int sub) const {
+        /* K_POTION=2 K_SCROLL=3 K_RING=4 K_WAND=5 才需要鉴定 */
+        if (kind < 2 || kind > 5) return true;
+        if (sub < 0 || sub >= 8) return true;
+        return ((ident_bits[kind] >> sub) & 1) != 0;
+    }
+    void mark_identified(int kind, int sub) {
+        if (kind >= 2 && kind <= 5 && sub >= 0 && sub < 8)
+            ident_bits[kind] |= (uint8_t)(1u << sub);
+    }
+    void identify_all_carried();           /* SC_IDENTIFY：鉴定身上+背包全部 */
 
     /* --- 回合与移动 --- */
     int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile */

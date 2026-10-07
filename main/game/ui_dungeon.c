@@ -1079,6 +1079,7 @@ void sdgoods_console_ext_cmd(char c)
     }
     if (c == 'b') { dg_api_debug_buff(2, 8); ESP_LOGI(TAG, "ext_cmd: b (haste+8)"); return; }  /* 取证：施加 HASTE */
     if (c == 'k') { ESP_LOGI(TAG, "ext_cmd: k (M3 selftest)"); dg_api_debug_m3(); return; }      /* 取证：M3 机制自检 */
+    if (c == 'p') { ESP_LOGI(TAG, "ext_cmd: p (M4 selftest)"); dg_api_debug_m4(); return; }      /* 取证：M4 物品全谱自检 */
 
     /* 场景流直推（不经像素命中，取证确定性强） */
     switch (c) {

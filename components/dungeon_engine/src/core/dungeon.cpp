@@ -89,6 +89,14 @@ Mob* Game::alloc_mob() {
 }
 void Game::free_mob(Mob* m) {
     if (!m) return;
+    /* 防御性回收：任何绕过 Actor::die 的释放路径（selftest 直接 free、
+     * 层内容重置等）都不该把怪身上的 intrusive buff 链留在池子里。
+     * Actor::die 已抽干并置空 first_buff，这里对它是 no-op。 */
+    while (m->first_buff) {
+        Buff* b = m->first_buff;
+        m->first_buff = b->next;
+        free_buff(b);
+    }
     int idx = (int)(m - s_mob_pool);
     if (idx >= 0 && idx < kMaxMob) s_mob_used[idx] = false;
 }
@@ -456,6 +464,8 @@ void Game::advance_mobs() {
         if (a->has_buff(Buff::SLOW))  eff /= 2;
         if (hero->has_buff(Buff::HASTE)) eff /= 2;
         if (hero->has_buff(Buff::SLOW))  eff *= 2;
+        /* 急速之戒：相当于英雄自带 HASTE，周围怪相对变慢（M4）*/
+        if (hero->equipped_ring && hero->equipped_ring->sub == RG_HASTE) eff /= 2;
         if (eff < 1) eff = 1;
         a->act_accum = (uint16_t)(a->act_accum + eff);
         int guard = 0;
@@ -496,6 +506,12 @@ void Game::end_turn() {
     } else if (hero->energy > Hero::kMaxEnergy / 2 && hero->hp < hero->hp_max &&
                (game_time % 5) == 0) {
         hero->hp++;   /* 半饱以上缓慢回血 */
+    }
+
+    /* 再生之戒：每 3 回合回 1 血，不要求半饱（M4）*/
+    if (hero->equipped_ring && hero->equipped_ring->sub == RG_REGEN &&
+        hero->hp < hero->hp_max && (game_time % 3) == 0) {
+        hero->hp++;
     }
 
     recalc_fov();
@@ -845,7 +861,8 @@ bool Game::inv_get(int slot, dg_item_info_t* out) {
     out->sub = it->sub; out->qty = it->qty; out->icon = it->icon;
     out->tier = it->tier; out->str_req = it->str_req;
     out->equipped = it->equipped; out->cursed = it->cursed;
-    out->name = it->name ? it->name : "?";
+    /* 未鉴定的药水/卷轴/戒指/法杖显「未鉴定的X」，其余显真名 */
+    out->name = item_display(it->kind, it->sub, it->tier, is_identified(it->kind, it->sub));
     return true;
 }
 bool Game::inv_use(int slot) {
@@ -942,6 +959,240 @@ int Game::hero_buffs(char* buf, int cap) {
         n += w;
     }
     return n;
+}
+
+/* SC_IDENTIFY：把身上与背包里所有消耗品/戒指一次性鉴定。 */
+void Game::identify_all_carried() {
+    if (!hero) return;
+    for (int i = 0; i < hero->inv_count; i++) {
+        Item* it = hero->inventory[i];
+        if (it) mark_identified(it->kind, it->sub);
+    }
+    if (hero->equipped_ring) mark_identified(hero->equipped_ring->kind, hero->equipped_ring->sub);
+}
+
+/* ===== M4 取证：物品全谱自检（串口 'p'）===== 逐项 ESP_LOGI 打 "M4 ... PASS/FAIL"。 */
+void Game::debug_m4_selftest() {
+    if (scene != DG_SCENE_IN_GAME) new_game(DG_CLASS_WARRIOR, 20261006u);
+    if (!hero || !level) { ESP_LOGE("dg.m4", "M4 no-hero/level"); return; }
+    hero->hp_max = 100000; hero->hp = 100000;
+    const int saved_as = hero->attack_skill;
+    ESP_LOGI("dg.m4", "M4 SELFTEST BEGIN");
+
+    auto clear_mobs = [&]() {
+        for (int i = 0; i < Level::LENGTH; i++)
+            if (level->tiles[i].actor && level->tiles[i].actor != (Actor*)hero)
+                level->tiles[i].actor = nullptr;
+        level->actor_count = 1;
+        level->actors[1] = nullptr;
+        /* 直接复位位图会绕过 free_mob，先手动抽干池内怪的 buff 链免得泄槽 */
+        for (int i = 0; i < kMaxMob; i++) {
+            if (!s_mob_used[i]) continue;
+            Mob* m = &s_mob_pool[i];
+            while (m->first_buff) { Buff* b = m->first_buff; m->first_buff = b->next; free_buff(b); }
+            s_mob_used[i] = false;
+        }
+    };
+    auto spawn_mob = [&](const MobSpec* s) -> Mob* {
+        Mob* m = alloc_mob(); if (!m) return nullptr;
+        *m = Mob{};
+        m->spec = s; m->sheet = s->sheet; m->name_key = s->name;
+        m->hp_max = s->hp; m->hp = s->hp;
+        m->attack_min = s->atk_min; m->attack_max = s->atk_max;
+        m->defense = s->def; m->xp_in_kill = s->xp; m->see_range = s->see; m->speed = s->speed;
+        m->alignment = 1; m->state = Mob::HUNTING; m->level = level; m->first_buff = nullptr;
+        m->move_anim = 255; m->flash_ticks = 0;
+        static const int dx8[8] = { 1,-1, 0, 0, 1, 1,-1,-1 };
+        static const int dy8[8] = { 0, 0, 1,-1, 1,-1, 1,-1 };
+        for (int i = 0; i < 8; i++) {
+            int nx = hero->x + dx8[i], ny = hero->y + dy8[i];
+            if (!level->passable(nx, ny) || level->at(nx, ny).actor) continue;
+            m->from_x = m->x = nx; m->from_y = m->y = ny; m->home_x = nx; m->home_y = ny;
+            level->at(nx, ny).actor = m; level->add_actor(m); recalc_fov();
+            return m;
+        }
+        free_mob(m); return nullptr;
+    };
+    auto drop_mob = [&](Mob* m) {
+        if (!m) return;
+        if (level->at(m->x, m->y).actor == m) level->at(m->x, m->y).actor = nullptr;
+        level->del_actor(m); free_mob(m);
+    };
+
+    /* 1. 鉴定：is_identified/mark_identified + 未鉴定泛称 / 真名 */
+    {
+        for (int i = 0; i < 6; i++) ident_bits[i] = 0;
+        bool id0 = is_identified(Item::K_POTION, POT_HEAL);
+        bool unid = strstr(item_display(Item::K_POTION, POT_HEAL, 0, id0), "\u672a\u9274\u5b9a") != nullptr;
+        mark_identified(Item::K_POTION, POT_HEAL);
+        bool id1 = is_identified(Item::K_POTION, POT_HEAL);
+        bool real = strstr(item_display(Item::K_POTION, POT_HEAL, 0, id1), "\u6cbb\u7597") != nullptr;
+        ESP_LOGI("dg.m4", "M4 IDENTIFY unid=%d real=%d %s", unid, real,
+                 (!id0 && id1 && unid && real) ? "PASS" : "FAIL");
+    }
+
+    /* 2. 自动鉴定：用一次治疗药水→该 (kind,sub) 变已鉴定 */
+    {
+        for (int i = 0; i < 6; i++) ident_bits[i] = 0;
+        hero->hp = 5;
+        Item* it = alloc_item();
+        if (it) {
+            fill_item(it, Item::K_POTION, POT_HEAL, 0);
+            item_use(hero, it);
+            ESP_LOGI("dg.m4", "M4 AUTOID_ON_USE %s", is_identified(Item::K_POTION, POT_HEAL) ? "PASS" : "FAIL");
+            free_item(it);
+        }
+    }
+
+    /* 3. 经验药水 + gainExp 升级 */
+    {
+        hero->exp = 0;
+        int lvl0 = hero->lvl;
+        Item* it = alloc_item();
+        if (it) {
+            fill_item(it, Item::K_POTION, POT_EXPERIENCE, 0);
+            int used = item_use(hero, it);
+            ESP_LOGI("dg.m4", "M4 POT_EXP lv %d->%d %s", lvl0, hero->lvl,
+                     (used == 1 && hero->lvl > lvl0) ? "PASS" : "FAIL");
+            free_item(it);
+        }
+    }
+
+    /* 4. SC_RAGE：HASTE + 命中上升 */
+    {
+        hero->remove_buff(Buff::HASTE);
+        int as0 = hero->attack_skill;
+        Item* it = alloc_item();
+        if (it) {
+            fill_item(it, Item::K_SCROLL, SC_RAGE, 0);
+            int used = item_use(hero, it);
+            ESP_LOGI("dg.m4", "M4 SC_RAGE haste=%d as+%d %s",
+                     hero->has_buff(Buff::HASTE) ? 1 : 0, hero->attack_skill - as0,
+                     (used == 1 && hero->has_buff(Buff::HASTE) && hero->attack_skill == as0 + 5) ? "PASS" : "FAIL");
+            free_item(it);
+        }
+    }
+
+    /* 5. SC_FEAR：周围怪上 FRIGHT */
+    {
+        clear_mobs();
+        Mob* m = spawn_mob(&MOB_SPECS[MOB_RAT]);
+        Item* it = alloc_item();
+        if (m && it) {
+            fill_item(it, Item::K_SCROLL, SC_FEAR, 0);
+            int used = item_use(hero, it);
+            ESP_LOGI("dg.m4", "M4 SC_FEAR %s", (used == 1 && m->has_buff(Buff::FRIGHT)) ? "PASS" : "FAIL");
+        } else ESP_LOGE("dg.m4", "M4 SC_FEAR setup FAIL");
+        drop_mob(m); if (it) free_item(it);
+    }
+
+    /* 6. SC_SLEEP：普通怪沉睡，亡灵免疫 */
+    {
+        clear_mobs();
+        Mob* m1 = spawn_mob(&MOB_SPECS[MOB_BAT]);
+        Mob* m2 = spawn_mob(&MOB_SPECS[MOB_SKELETON]);
+        Item* it = alloc_item();
+        if (m1 && m2 && it) {
+            fill_item(it, Item::K_SCROLL, SC_SLEEP, 0);
+            item_use(hero, it);
+            bool ok = m1->has_buff(Buff::SLEEP) && !m2->has_buff(Buff::SLEEP);
+            ESP_LOGI("dg.m4", "M4 SC_SLEEP sleep=%d undead-immune=%d %s",
+                     m1->has_buff(Buff::SLEEP) ? 1 : 0, m2->has_buff(Buff::SLEEP) ? 1 : 0,
+                     ok ? "PASS" : "FAIL");
+        } else ESP_LOGE("dg.m4", "M4 SC_SLEEP setup FAIL");
+        drop_mob(m1); drop_mob(m2); if (it) free_item(it);
+    }
+
+    /* 7. WD_FLAME / WD_CHILL */
+    {
+        clear_mobs();
+        Mob* m = spawn_mob(&MOB_SPECS[MOB_RAT]);
+        m->hp = m->hp_max = 300;              /* 不被一发秒，便于观察 buff */
+        Item* it = alloc_item();
+        if (m && it) {
+            fill_item(it, Item::K_WAND, WD_FLAME, 0); it->qty = 3;
+            item_use(hero, it);
+            ESP_LOGI("dg.m4", "M4 WD_FLAME %s", m->has_buff(Buff::BURNING) ? "PASS" : "FAIL");
+            fill_item(it, Item::K_WAND, WD_CHILL, 0); it->qty = 3;
+            item_use(hero, it);
+            ESP_LOGI("dg.m4", "M4 WD_CHILL %s",
+                     (m->has_buff(Buff::ROOTS) && m->has_buff(Buff::SLOW)) ? "PASS" : "FAIL");
+            free_item(it);
+        } else ESP_LOGE("dg.m4", "M4 WAND setup FAIL");
+        drop_mob(m);
+    }
+
+    /* 8. RG_REGEN：装备后每几回合回血 */
+    {
+        clear_mobs();
+        Item* ring = alloc_item();
+        if (ring) {
+            fill_item(ring, Item::K_RING, RG_REGEN, 0);
+            hero->equip(ring);
+            hero->hp = hero->hp_max - 20;
+            int before = hero->hp;
+            for (int t = 0; t < 8 && hero->hp <= before; t++) end_turn();
+            ESP_LOGI("dg.m4", "M4 RG_REGEN %d->%d %s", before, hero->hp, hero->hp > before ? "PASS" : "FAIL");
+            hero->unequip(ring); free_item(ring);
+        }
+    }
+
+    /* 9. RG_THORNS：近战受击反弹 */
+    {
+        clear_mobs();
+        Mob* m = spawn_mob(&MOB_SPECS[MOB_RAT]);
+        m->hp = m->hp_max = 300;              /* 别被反弹打死 */
+        Item* ring = alloc_item();
+        if (m && ring) {
+            fill_item(ring, Item::K_RING, RG_THORNS, 0);
+            hero->equip(ring);
+            int mhp0 = m->hp;
+            m->state = Mob::HUNTING;
+            for (int t = 0; t < 6 && m->hp >= mhp0; t++) m->act();   /* 贴身普攻→反复触发反弹 */
+            ESP_LOGI("dg.m4", "M4 RG_THORNS mobhp %d->%d %s", mhp0, m->hp, m->hp < mhp0 ? "PASS" : "FAIL");
+            hero->unequip(ring); free_item(ring);
+        } else ESP_LOGE("dg.m4", "M4 RG_THORNS setup FAIL");
+        drop_mob(m);
+    }
+
+    /* 10. 附魔 proc：BLAZING 点燃 / VAMPIRIC 回血 */
+    {
+        clear_mobs();
+        hero->attack_skill = 100000;         /* 保证命中 */
+        Item* wep = alloc_item();
+        Mob* m = spawn_mob(&MOB_SPECS[MOB_RAT]);
+        if (m) m->hp = m->hp_max = 300;
+        if (wep && m) {
+            fill_item(wep, Item::K_WEAPON, 0, 1); wep->str_req = 0; wep->enchant = EN_BLAZING;
+            hero->equip(wep);
+            hero->attack(m);
+            ESP_LOGI("dg.m4", "M4 EN_BLAZING %s", m->has_buff(Buff::BURNING) ? "PASS" : "FAIL");
+            hero->unequip(wep);
+        } else ESP_LOGE("dg.m4", "M4 EN_BLAZING setup FAIL");
+        drop_mob(m);
+        m = spawn_mob(&MOB_SPECS[MOB_RAT]);
+        if (m) m->hp = m->hp_max = 300;
+        if (wep && m) {
+            fill_item(wep, Item::K_WEAPON, 0, 5); wep->str_req = 0; wep->enchant = EN_VAMPIRIC;
+            hero->equip(wep);
+            hero->hp = hero->hp_max - 200;
+            int hb = hero->hp;
+            hero->attack(m);
+            ESP_LOGI("dg.m4", "M4 EN_VAMPIRIC hp %d->%d %s", hb, hero->hp, hero->hp > hb ? "PASS" : "FAIL");
+            hero->unequip(wep);
+        } else ESP_LOGE("dg.m4", "M4 EN_VAMPIRIC setup FAIL");
+        hero->attack_skill = saved_as;
+        drop_mob(m); if (wep) free_item(wep);
+    }
+
+    clear_mobs();
+    /* 收尾：回一层干净开局 */
+    level->generate(seed, 0); level->depth = 0; depth = 0;
+    hero->hp_max = 20; hero->hp = 20; hero->attack_skill = saved_as;
+    hero->set_pos(level->entrance_pos % DG_MAP_W, level->entrance_pos / DG_MAP_W);
+    hero->from_x = hero->x; hero->from_y = hero->y; hero->move_anim = 255;
+    spawn_level_content(); recalc_fov(); game_time = 1;
+    ESP_LOGI("dg.m4", "M4 SELFTEST END");
 }
 
 }  /* namespace dg */

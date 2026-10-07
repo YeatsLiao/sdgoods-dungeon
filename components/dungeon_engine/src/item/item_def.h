@@ -28,6 +28,7 @@ enum PotionSub : int16_t {
     POT_LEVITATE,     /* 白斑：悬浮 */
     POT_STRENGTH,     /* 金斑：力量 */
     POT_PURIFY,       /* 绿斑：净化 */
+    POT_EXPERIENCE,   /* 蓝斑：经验（M4）*/
     POT_COUNT
 };
 
@@ -37,6 +38,10 @@ enum ScrollSub : int16_t {
     SC_UPGRADE,       /* 升级：给已装备的武器/护甲 +1 */
     SC_REMOVE_CURSE,  /*  Remove Curse：解掉身上诅咒 */
     SC_TELEPORT,      /* 传送：随机落到本层空地 */
+    SC_IDENTIFY,      /* 鉴定：看清背包中未鉴定物品（M4）*/
+    SC_FEAR,          /* 恐惧：周围怪 FRIGHT 逃散（M4）*/
+    SC_SLEEP,         /* 魔法沉睡：周围怪 SLEEP（M4）*/
+    SC_RAGE,          /* 狂暴：英雄 HASTE + 攻击命中上升（M4）*/
     SC_COUNT
 };
 
@@ -45,6 +50,9 @@ enum RingSub : int16_t {
     RG_MIGHT = 0,     /* 力量 +2 */
     RG_ACCURACY,      /* 命中 +8 */
     RG_EVASION,       /* 闪避 +8 */
+    RG_HASTE,         /* 急速：装备时怪相对变慢（M4）*/
+    RG_REGEN,         /* 再生：装备时每几回合回血（M4）*/
+    RG_THORNS,        /* 蒺藜：近战受击反弹伤害（M4）*/
     RG_COUNT
 };
 
@@ -52,7 +60,19 @@ enum RingSub : int16_t {
 enum WandSub : int16_t {
     WD_BOLT = 0,      /* 魔法飞弹：固定伤害远程 */
     WD_SLOW,          /* 缓速：目标 SLOW */
+    WD_FLAME,         /* 烈焰：目标 BURNING（M4）*/
+    WD_CHILL,         /* 寒冰：目标 ROOTS+SLOW（M4）*/
     WD_COUNT
+};
+
+/* 近战附魔（Item::enchant）—— 击中时按概率触发额外效果（M4）*/
+enum WeaponEnchant : int8_t {
+    EN_NONE = 0,
+    EN_BLAZING,       /* 烈焰：命中点燃 BURNING */
+    EN_CHILLING,      /* 寒冰：命中减速 SLOW */
+    EN_SHOCKING,      /* 雷电：额外固定伤害 */
+    EN_VAMPIRIC,      /* 吸血：按伤害回血 */
+    EN_COUNT
 };
 
 /* 食物变体 */
@@ -81,6 +101,8 @@ const char* armor_name(int tier);
 /* ---- 名字 / 图标 ---- */
 const char* item_name(int kind, int sub, int tier);
 int         item_icon(int kind, int sub, int tier);
+/* 背包/详情显示名：未鉴定的药水/卷轴/戒指/法杖给「未鉴定的X」泛称，装备与已鉴定给真名。*/
+const char* item_display(int kind, int sub, int tier, bool identified);
 
 /* ---- 构造与掉落 ---- */
 /* 就地填好一件物品（不动 pool 位图、不落格子）。 */

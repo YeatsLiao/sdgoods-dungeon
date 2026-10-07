@@ -299,6 +299,10 @@ void dg_api_debug_buff(int type, int duration);
  * 野兽人狂暴 / 萨满瞬移 / 蜘蛛结网 关键分支，逐项 ESP_LOGI 打 "M3 ... PASS/FAIL"。 */
 void dg_api_debug_m3(void);
 
+/* 调试（仅取证用）：M4 物品全谱自检——鉴定/经验/狂暴/恐惧/沉睡/法杖/戒指/附魔 关键分支，
+ * 逐项 ESP_LOGI 打 "M4 ... PASS/FAIL"。 */
+void dg_api_debug_m4(void);
+
 /* ===== 素材透出（v0.4：UI 按钮 / 图标全走上游图集） ===== */
 
 /* 素材是否可用（assets 分区烧了烘焙图）。false 时 UI 应回退纯色 + 文字。 */

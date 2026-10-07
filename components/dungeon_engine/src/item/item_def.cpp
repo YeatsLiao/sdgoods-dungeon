@@ -53,16 +53,17 @@ static const int k_arm_drmax[6] = { 0, 2, 4, 6, 8, 10 };
 static const int k_arm_str[6]   = { 0, 10, 12, 14, 16, 18 };
 
 static const char* const k_pot_name[POT_COUNT] = {
-    "治疗药水", "急速药水", "隐身药水", "悬浮药水", "力量药水", "净化药水"
+    "治疗药水", "急速药水", "隐身药水", "悬浮药水", "力量药水", "净化药水", "经验药水"
 };
 static const char* const k_scr_name[SC_COUNT] = {
-    "魔法地图卷轴", "升级卷轴", "解除诅咒卷轴", "传送卷轴"
+    "魔法地图卷轴", "升级卷轴", "解除诅咒卷轴", "传送卷轴",
+    "鉴定卷轴", "恐惧卷轴", "沉睡卷轴", "狂暴卷轴"
 };
 static const char* const k_rng_name[RG_COUNT] = {
-    "力量之戒", "精准之戒", "疾影之戒"
+    "力量之戒", "精准之戒", "疾影之戒", "急速之戒", "再生之戒", "蒺藜之戒"
 };
 static const char* const k_wnd_name[WD_COUNT] = {
-    "飞弹法杖", "缓速法杖"
+    "飞弹法杖", "缓速法杖", "烈焰法杖", "寒冰法杖"
 };
 static const char* const k_food_name[FD_COUNT] = {
     "旅行口粮", "猎人馅饼"
@@ -97,6 +98,21 @@ const char* item_name(int kind, int sub, int tier)
     }
 }
 
+const char* item_display(int kind, int sub, int tier, bool identified)
+{
+    /* 只有药水/卷轴/戒指/法杖这四类需要鉴定；未鉴定给按大类的泛称 */
+    if (!identified) {
+        switch (kind) {
+        case Item::K_POTION: return "未鉴定的药水";
+        case Item::K_SCROLL: return "未鉴定的卷轴";
+        case Item::K_RING:   return "未鉴定的戒指";
+        case Item::K_WAND:   return "未鉴定的法杖";
+        default: break;
+        }
+    }
+    return item_name(kind, sub, tier);
+}
+
 int item_icon(int kind, int sub, int tier)
 {
     switch (kind) {
@@ -124,6 +140,7 @@ void fill_item(Item* it, int kind, int sub, int tier)
     it->qty     = 1;
     it->cursed  = 0;
     it->equipped = EQ_NONE;
+    it->enchant  = 0;
     it->x = it->y = 0;
     switch (kind) {
     case Item::K_WEAPON:
@@ -196,6 +213,9 @@ Item* roll_drop(int quality, int depth, JavaRandom* r)
     fill_item(it, kind, sub, tier);
     /* 20% 概率带诅咒（只贴装备，消耗品不诅咒）—— 逼出解除诅咒卷轴的价值 */
     if (it->is_equipment() && r->nextInt(100) < 20) it->cursed = 1;
+    /* 高档武器（tier≥4）随机带近战附魔，品阶越高越可能（M4）*/
+    if (kind == Item::K_WEAPON && it->tier >= 4 && r->nextInt(100) < 45)
+        it->enchant = (int8_t)(1 + r->nextInt(EN_COUNT - 1));
     return it;
 }
 

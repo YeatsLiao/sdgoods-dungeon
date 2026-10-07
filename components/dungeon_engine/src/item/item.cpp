@@ -102,6 +102,11 @@ static int potion_use(Hero* h, Item* it)
         h->remove_buff(Buff::SLOW);
         g.log("体内的杂质被冲刷干净。");
         break;
+    case POT_EXPERIENCE:
+        h->gainExp(h->maxExp());          /* 至少升一级 */
+        g.add_float(h->x, h->y, "EXP", 0x07FF);
+        g.log("无数记忆的碎片灌进脑海 —— 你变强了。");
+        break;
     default:
         g.log("这瓶药水闻所未闻，你犹豫着没喝。");
         return 0;
@@ -160,6 +165,44 @@ static int scroll_use(Hero* h, Item* it)
         g.log("世界在你脚下翻转。");
         break;
     }
+    case SC_IDENTIFY:
+        g.identify_all_carried();
+        g.log("一行行细小的文字浮上每件物品的表面。");
+        break;
+    case SC_FEAR: {
+        int n = 0;
+        for (int i = 1; i < lv->actor_count; i++) {
+            Mob* m = (Mob*)lv->actors[i];
+            if (!m || !m->is_alive()) continue;
+            if (lv->distance(m->x, m->y, h->x, h->y) > 6) continue;
+            m->add_buff(Buff::FRIGHT, 12);
+            if (m->state == Mob::HUNTING || m->state == Mob::WANDERING) m->state = Mob::FLEEING;
+            n++;
+        }
+        if (!n) { g.log("卷轴燃尽，但附近没有活物。"); return 0; }
+        g.log("无形的恐惧攫住了周围的生物。");
+        break;
+    }
+    case SC_SLEEP: {
+        int n = 0;
+        for (int i = 1; i < lv->actor_count; i++) {
+            Mob* m = (Mob*)lv->actors[i];
+            if (!m || !m->is_alive()) continue;
+            if (lv->distance(m->x, m->y, h->x, h->y) > 6) continue;
+            if (m->spec && (m->spec->flags & MF_UNDEAD)) continue;   /* 亡灵免疫沉睡 */
+            m->add_buff(Buff::SLEEP, 20);
+            m->state = Mob::SLEEPING;
+            n++;
+        }
+        if (!n) { g.log("没有生物被睡意捕获。"); return 0; }
+        g.log("困意如潮水般淹没了周围的生物。");
+        break;
+    }
+    case SC_RAGE:
+        h->add_buff(Buff::HASTE, 20);
+        h->attack_skill += 5;
+        g.log("怒火涌上四肢 —— 你急切地想撕碎什么。");
+        break;
     default:
         return 0;
     }
@@ -174,18 +217,32 @@ static int wand_use(Hero* h, Item* it)
     Mob* m = nearest_visible_mob(h);
     if (!m) { g.log("视野里没有可以施法的目标。"); return 0; }
     int dmg = 0;
-    if (it->sub == WD_BOLT) {
+    uint16_t beam = 0x0710;
+    switch (it->sub) {
+    case WD_BOLT:
         dmg = 5 + h->lvl;
         m->damage(dmg, "bolt");
-        g.add_float(m->x, m->y, "!", 0x0710);          /* 青蓝法术色 */
-        g.sfx(DG_SFX_ZAP);
-    } else {
+        g.add_float(m->x, m->y, "!", 0x0710);
+        break;
+    case WD_FLAME:
+        beam = 0xF820;
+        m->add_buff(Buff::BURNING, 8);
+        m->damage(3 + h->lvl / 2, "flame");
+        g.log("烈焰舔上了目标。");
+        break;
+    case WD_CHILL:
+        beam = 0x8FE7;
         m->add_buff(Buff::SLOW, 12);
-        g.sfx(DG_SFX_ZAP);
+        m->add_buff(Buff::ROOTS, 4);
+        g.log("寒霜冻结了目标的四肢。");
+        break;
+    default: /* WD_SLOW */
+        m->add_buff(Buff::SLOW, 12);
+        break;
     }
-    g.add_beam(h->x, h->y, m->x, m->y, 0x0710);
+    g.sfx(DG_SFX_ZAP);
+    g.add_beam(h->x, h->y, m->x, m->y, beam);
     it->qty--;
-    g.log("法杖前端迸出一道光。");
     if (it->qty <= 0) { g.log("法杖碎裂成粉。"); return 1; }
     return 0;        /* 不消耗，但本回合已用掉 */
 }
@@ -206,6 +263,9 @@ int item_use(Hero* h, Item* it)
 {
     if (!h || !it) return 0;
     Game& g = Game::instance();
+    /* 用过一次即全局鉴定该 (kind,sub)（药水/卷轴/法杖）*/
+    if (it->kind == Item::K_POTION || it->kind == Item::K_SCROLL || it->kind == Item::K_WAND)
+        g.mark_identified(it->kind, it->sub);
     int consumed = 0;
     switch (it->kind) {
     case Item::K_POTION: consumed = potion_use(h, it); break;

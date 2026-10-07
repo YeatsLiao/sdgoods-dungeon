@@ -296,6 +296,12 @@ int Mob::act()
                 h->add_buff(Buff::POISON, 6);
                 g.log("毒液顺着伤口爬了上来。");
             }
+            /* 蒺藜之戒：近战受击反弹一部分伤害（M4）*/
+            if (h->equipped_ring && h->equipped_ring->sub == RG_THORNS && is_alive()) {
+                int refl = 2 + rand_int(4);
+                damage(refl, "thorns");
+                g.add_float(x, y, "T", 0x07E0);
+            }
         } else {
             g.add_float(h->x, h->y, "MISS", 0xAD55);
         }
