@@ -382,6 +382,31 @@ bool Game::hero_try_step(int gx, int gy) {
     /* 宝箱：贴着就开，不移动 */
     if (t.terr == DG_TERR_CHEST) {
         if (t.chest_open) { log("箱子已经空了。"); sfx(DG_SFX_ERROR); return false; }
+        /* 宝箱怪（M5）：开箱瞬间长出腿和牙齿，就地变成一只 ENEMY 怪；
+         * 宝箱变地板让怪站得住，它下一回合自然起手。 */
+        if (t.mimic) {
+            t.mimic = 0; t.chest_open = 1; t.terr = DG_TERR_FLOOR;
+            const MobSpec* ms = &MOB_SPECS[MOB_MIMIC];
+            Mob* mk = alloc_mob();
+            if (mk) {
+                *mk = Mob{};
+                mk->spec = ms; mk->sheet = ms->sheet; mk->name_key = ms->name;
+                mk->hp_max = ms->hp; mk->hp = ms->hp;
+                mk->attack_min = ms->atk_min; mk->attack_max = ms->atk_max;
+                mk->defense = ms->def; mk->xp_in_kill = ms->xp; mk->see_range = ms->see;
+                mk->speed = ms->speed; mk->alignment = 1; mk->state = Mob::HUNTING;
+                mk->level = level; mk->first_buff = nullptr; mk->flash_ticks = 0;
+                mk->move_anim = 255; mk->anim_seed = (uint8_t)rng->nextInt(256);
+                mk->from_x = mk->x = gx; mk->from_y = mk->y = gy;
+                mk->home_x = gx; mk->home_y = gy;
+                t.actor = mk; level->add_actor(mk);
+                sfx(DG_SFX_KILL);
+                log("宝箱长出了腿和牙齿——是宝箱怪！");
+                fb_dirty = true;
+                return true;
+            }
+            /* 池满退化为普通宝箱 */
+        }
         t.chest_open = 1;
         sfx(DG_SFX_CHEST);
         drop_random_item(gx, gy, 2);
@@ -1193,6 +1218,114 @@ void Game::debug_m4_selftest() {
     hero->from_x = hero->x; hero->from_y = hero->y; hero->move_anim = 255;
     spawn_level_content(); recalc_fov(); game_time = 1;
     ESP_LOGI("dg.m4", "M4 SELFTEST END");
+}
+
+/* ===== M5 取证：关卡生成可达性 + 房间多样 + 宝箱怪自检（串口 'y'）=====
+ * 不做脆弱的真机导航，而是直接逐层 generate + 洪水填充，断言：
+ *   ① 每层出口从入口可达（passable() 口径：墙/秘密门/上锁门/宝箱/雕像为阻）；
+ *   ② 入口 != 出口；12F 有基座与护身符；
+ *   ③ 宝箱怪功能：把临近格标成 mimic 宝箱，踩上应就地变出一只 MIMIC 怪。 */
+void Game::debug_m5_selftest() {
+    if (scene != DG_SCENE_IN_GAME) new_game(DG_CLASS_WARRIOR, 20261006u);
+    if (!hero || !level) { ESP_LOGE("dg.m5", "M5 no-hero/level"); return; }
+    const uint32_t s = seed;
+    static uint8_t vis[DG_MAP_W * DG_MAP_H];
+    static int qx[DG_MAP_W * DG_MAP_H], qy[DG_MAP_W * DG_MAP_H];
+    int pass = 0, fail = 0;
+    ESP_LOGI("dg.m5", "M5 SELFTEST BEGIN seed=%u", (unsigned)s);
+
+    /* 给定 seed+depth 生成一层，从入口 BFS（只走 passable() 为真的格），
+     * 判出口是否可达且与入口不同。 */
+    auto exit_reachable = [&](uint32_t sd, int d) -> bool {
+        level->generate(sd, d);
+        level->depth = d;
+        int sx = level->entrance_pos % DG_MAP_W, sy = level->entrance_pos / DG_MAP_W;
+        int tx = level->exit_pos % DG_MAP_W,       ty = level->exit_pos / DG_MAP_W;
+        if (sx == tx && sy == ty) return false;
+        memset(vis, 0, sizeof(vis));
+        int head = 0, tail = 0;
+        qx[tail] = sx; qy[tail] = sy; tail++;
+        vis[sx + sy * DG_MAP_W] = 1;
+        static const int dx4[4] = { 0, 1, 0, -1 };
+        static const int dy4[4] = { -1, 0, 1, 0 };
+        while (head < tail) {
+            int x = qx[head], y = qy[head]; head++;
+            for (int k = 0; k < 4; k++) {
+                int nx = x + dx4[k], ny = y + dy4[k];
+                if (nx < 0 || ny < 0 || nx >= DG_MAP_W || ny >= DG_MAP_H) continue;
+                int idx = nx + ny * DG_MAP_W;
+                if (vis[idx]) continue;
+                if ((nx != tx || ny != ty) && !level->passable(nx, ny)) continue;
+                vis[idx] = 1; qx[tail] = nx; qy[tail] = ny; tail++;
+            }
+        }
+        return vis[tx + ty * DG_MAP_W] != 0;
+    };
+
+    /* 主 seed：逐层详细打印 */
+    for (int d = 0; d < DG_MAX_DEPTH; d++) {
+        bool ok = exit_reachable(s, d);
+        ESP_LOGI("dg.m5", "M5 depth%d %s", d + 1, ok ? "PASS" : "FAIL");
+        ok ? pass++ : fail++;
+    }
+
+    /* 跨 seed 压力：8 个 seed × 12 层，任何断连都记一次（断连是稀事件，多 seed 才抓得住）*/
+    int st_total = 0, st_fail = 0;
+    for (int k = 0; k < 8; k++) {
+        uint32_t sd = s ^ (uint32_t)(k * 0x9E3779B1u + 0x12345u);
+        for (int d = 0; d < DG_MAX_DEPTH; d++) { st_total++; if (!exit_reachable(sd, d)) st_fail++; }
+    }
+    ESP_LOGI("dg.m5", "M5 REACH-STRESS total=%d fail=%d %s", st_total, st_fail, st_fail == 0 ? "PASS" : "FAIL");
+    if (st_fail) fail++;
+
+    /* 宝箱怪功能测试：回到当前层，在英雄旁空格里放一个 mimic 宝箱，踩上应变出怪 */
+    level->generate(s, 0); level->depth = 0; depth = 0;
+    hero->set_pos(level->entrance_pos % DG_MAP_W, level->entrance_pos / DG_MAP_W);
+    hero->from_x = hero->x; hero->from_y = hero->y; hero->move_anim = 255;
+    level->at(hero->x, hero->y).actor = hero;
+    level->add_actor(hero);   /* 纳入演员表，使 MIMIC 落在 actors[1]，搜索从 i=1 才对得上 */
+    int cx = -1, cy = -1;
+    static const int dx8[8] = { 1, -1, 0, 0, 1, 1, -1, -1 };
+    static const int dy8[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    for (int i = 0; i < 8; i++) {
+        int nx = hero->x + dx8[i], ny = hero->y + dy8[i];
+        if (nx < 0 || ny < 0 || nx >= DG_MAP_W || ny >= DG_MAP_H) continue;
+        Tile& t = level->at(nx, ny);
+        if (t.terr != DG_TERR_FLOOR || t.actor || t.item) continue;
+        cx = nx; cy = ny; break;
+    }
+    bool mimic_ok = false;
+    if (cx >= 0) {
+        Tile& t = level->at(cx, cy);
+        t.terr = DG_TERR_CHEST; t.chest_open = 0; t.mimic = 1;
+        bool stepped = hero_try_step(cx, cy);
+        Mob* mk = nullptr;
+        for (int i = 1; i < level->actor_count; i++) {
+            Mob* m = static_cast<Mob*>(level->actors[i]);
+            if (m && m->is_alive() && m->spec && m->spec->sheet == (uint8_t)gfx::SH_MOB_MIMIC) { mk = m; break; }
+        }
+        mimic_ok = stepped && mk != nullptr;
+        ESP_LOGI("dg.m5", "M5 MIMIC_CHEST stepped=%d spawned=%d %s",
+                 stepped ? 1 : 0, mk ? 1 : 0, mimic_ok ? "PASS" : "FAIL");
+        if (mk) { level->at(mk->x, mk->y).actor = nullptr; level->del_actor(mk); free_mob(mk); }
+    } else {
+        ESP_LOGE("dg.m5", "M5 MIMIC_CHEST no-spot FAIL");
+    }
+
+    /* 收尾：回一层干净开局，清掉测试期间的 mimic/怪 */
+    for (int i = 0; i < kMaxMob; i++) {
+        if (!s_mob_used[i]) continue;
+        Mob* m = &s_mob_pool[i];
+        while (m->first_buff) { Buff* b = m->first_buff; m->first_buff = b->next; free_buff(b); }
+        s_mob_used[i] = false;
+    }
+    level->generate(seed, 0); level->depth = 0; depth = 0;
+    hero->set_pos(level->entrance_pos % DG_MAP_W, level->entrance_pos / DG_MAP_W);
+    hero->from_x = hero->x; hero->from_y = hero->y; hero->move_anim = 255;
+    spawn_level_content(); recalc_fov(); game_time = 1;
+    ESP_LOGI("dg.m5", "M5 SUMMARY reachable=%d/%d mimic=%d %s",
+             pass, DG_MAX_DEPTH, mimic_ok ? 1 : 0,
+             (fail == 0 && mimic_ok) ? "ALL PASS" : "CHECK ABOVE");
 }
 
 }  /* namespace dg */

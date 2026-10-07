@@ -303,6 +303,10 @@ void dg_api_debug_m3(void);
  * 逐项 ESP_LOGI 打 "M4 ... PASS/FAIL"。 */
 void dg_api_debug_m4(void);
 
+/* 调试（仅取证用）：M5 关卡生成自检——逐层 generate + 洪水填充断言出口可达，
+ * 入/出口不同，并验证宝箱怪开箱变身；逐项 ESP_LOGI 打 "M5 ... PASS/FAIL"。 */
+void dg_api_debug_m5(void);
+
 /* ===== 素材透出（v0.4：UI 按钮 / 图标全走上游图集） ===== */
 
 /* 素材是否可用（assets 分区烧了烘焙图）。false 时 UI 应回退纯色 + 文字。 */

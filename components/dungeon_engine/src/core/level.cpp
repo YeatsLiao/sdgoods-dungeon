@@ -140,6 +140,44 @@ static bool pick_in_room(Level* lv, JavaRandom& r, const Room& rm,
     return false;
 }
 
+/* 开敞内场：该格是 FLOOR 且四邻皆 FLOOR。固态装饰（雕像/宝箱）只放这种格，
+ * 保证不落在 1 宽走廊口而切断图。 */
+static bool open_field_at(Level* lv, int x, int y)
+{
+    if (x < 1 || y < 1 || x >= DG_MAP_W - 1 || y >= DG_MAP_H - 1) return false;
+    if (lv->at(x, y).terr != DG_TERR_FLOOR) return false;
+    return lv->at(x - 1, y).terr == DG_TERR_FLOOR && lv->at(x + 1, y).terr == DG_TERR_FLOOR &&
+           lv->at(x, y - 1).terr == DG_TERR_FLOOR && lv->at(x, y + 1).terr == DG_TERR_FLOOR;
+}
+
+/* 洪水填充：从入口沿 passable() 真格能否走到出口（生成末尾的可达性兵底）。*/
+static bool flood_exit_reachable(Level* lv)
+{
+    static bool vis[DG_MAP_W * DG_MAP_H];
+    static int  qx[DG_MAP_W * DG_MAP_H], qy[DG_MAP_W * DG_MAP_H];
+    int sx = lv->entrance_pos % DG_MAP_W, sy = lv->entrance_pos / DG_MAP_W;
+    int tx = lv->exit_pos % DG_MAP_W,       ty = lv->exit_pos / DG_MAP_W;
+    if (sx == tx && sy == ty) return false;
+    memset(vis, 0, sizeof(vis));
+    int head = 0, tail = 0;
+    qx[tail] = sx; qy[tail] = sy; tail++;
+    vis[sx + sy * DG_MAP_W] = true;
+    static const int dx4[4] = { 0, 1, 0, -1 };
+    static const int dy4[4] = { -1, 0, 1, 0 };
+    while (head < tail) {
+        int x = qx[head], y = qy[head]; head++;
+        for (int k = 0; k < 4; k++) {
+            int nx = x + dx4[k], ny = y + dy4[k];
+            if (nx < 0 || ny < 0 || nx >= DG_MAP_W || ny >= DG_MAP_H) continue;
+            int idx = nx + ny * DG_MAP_W;
+            if (vis[idx]) continue;
+            if ((nx != tx || ny != ty) && !lv->passable(nx, ny)) continue;
+            vis[idx] = true; qx[tail] = nx; qy[tail] = ny; tail++;
+        }
+    }
+    return vis[tx + ty * DG_MAP_W];
+}
+
 /* ===== 主生成 ===== */
 
 bool Level::generate(uint32_t base_seed, int depth_)
@@ -274,6 +312,108 @@ bool Level::generate(uint32_t base_seed, int depth_)
     entrance_pos = (pos_t)(en_x + en_y * DG_MAP_W);
     exit_pos     = (pos_t)(ex_x + ex_y * DG_MAP_W);
 
+    int chapter = this->chapter();
+
+    /* --- 5b. 特殊房间主题：从非进出口房间挑 1~3 个赋予 coherent 装饰，
+     *         让每层结构可读、玩法多样（对齐上游 Garden / Statuary / Vault /
+     *         TrapRoom / Pool 等 RegularRoom 子类的「结论」而非实现）。--- */
+    {
+        enum SpecRoomType { SPEC_GARDEN = 0, SPEC_STATUARY, SPEC_VAULT, SPEC_TRAPROOM, SPEC_POOL,
+                            SPEC_TYPE_COUNT };
+        int cand[10]; int cand_n = 0;
+        for (int i = 0; i < room_count; i++)
+            if (i != near_i && i != far_i) cand[cand_n++] = i;
+        for (int i = cand_n - 1; i > 0; i--) {          /* Fisher-Yates 打乱候选房间 */
+            int j = r.nextInt(i + 1);
+            int t = cand[i]; cand[i] = cand[j]; cand[j] = t;
+        }
+        int types[SPEC_TYPE_COUNT] = { SPEC_GARDEN, SPEC_STATUARY, SPEC_VAULT, SPEC_TRAPROOM, SPEC_POOL };
+        for (int i = SPEC_TYPE_COUNT - 1; i > 0; i--) {  /* 类型顺序也打乱，避免每层同拍 */
+            int j = r.nextInt(i + 1);
+            int t = types[i]; types[i] = types[j]; types[j] = t;
+        }
+        int want_spec = 1 + r.nextInt(2) + (depth_ >= DG_CHAPTER_DEPTH ? 1 : 0);   /* 1~3，深层更多 */
+        if (want_spec > cand_n) want_spec = cand_n;
+
+        /* 开敞内场判定：该格是 FLOOR 且四邻皆 FLOOR。只有这种格才能放
+         * 固态装饰（雕像 / 宝箱）——保证它不落在走廊口 / 房间门口，
+         * 也就绝不会把唯一通路切断（出口可达性是硬约束）。 */
+        auto open_field = [&](int x, int y) -> bool {
+            if (x < 1 || y < 1 || x >= DG_MAP_W - 1 || y >= DG_MAP_H - 1) return false;
+            if (tiles[x + y * DG_MAP_W].terr != DG_TERR_FLOOR) return false;
+            return tiles[(x - 1) + y * DG_MAP_W].terr == DG_TERR_FLOOR &&
+                   tiles[(x + 1) + y * DG_MAP_W].terr == DG_TERR_FLOOR &&
+                   tiles[x + (y - 1) * DG_MAP_W].terr == DG_TERR_FLOOR &&
+                   tiles[x + (y + 1) * DG_MAP_W].terr == DG_TERR_FLOOR;
+        };
+
+        for (int s = 0; s < want_spec; s++) {
+            const Room& rm = rooms[cand[s]];
+            int w = rm.x1 - rm.x0 + 1, h = rm.y1 - rm.y0 + 1;
+            int ty = types[s % SPEC_TYPE_COUNT];
+            switch (ty) {
+            case SPEC_GARDEN:      /* 花园：室内铺草（洞穴章掺高草），出生点附近留白 */
+                for (int y = rm.y0; y <= rm.y1; y++) {
+                    for (int x = rm.x0; x <= rm.x1; x++) {
+                        Tile& t = tiles[x + y * DG_MAP_W];
+                        if (t.terr != DG_TERR_FLOOR) continue;
+                        if (distance(x, y, en_x, en_y) < 3) continue;
+                        t.terr = (chapter == 2 && (tile_hash(x, y, (uint32_t)depth * 3u + s) & 3) == 0)
+                                 ? DG_TERR_HIGH_GRASS : DG_TERR_GRASS;
+                    }
+                }
+                break;
+            case SPEC_STATUARY: {  /* 雕像室：在开敞内场撒 1~3 根柱（四邻皆地，不断路）*/
+                int placed = 0;
+                for (int tries = 0; tries < 30 && placed < 3; tries++) {
+                    int sx = rm.x0 + 1 + r.nextInt(w - 2 < 1 ? 1 : w - 2);
+                    int sy = rm.y0 + 1 + r.nextInt(h - 2 < 1 ? 1 : h - 2);
+                    if (!open_field(sx, sy)) continue;
+                    if (distance(sx, sy, en_x, en_y) < 4) continue;
+                    tiles[sx + sy * DG_MAP_W].terr = DG_TERR_STATUE;
+                    placed++;
+                }
+            } break;
+            case SPEC_VAULT: {     /* 储藏 vault： clustered 2~3 个宝箱（只放开敞内场），约四成是宝箱怪 */
+                int want = 2 + r.nextInt(2);
+                int placed = 0;
+                for (int tries = 0; tries < 40 && placed < want; tries++) {
+                    int cx = rm.x0 + 1 + r.nextInt(w - 2 < 1 ? 1 : w - 2);
+                    int cy = rm.y0 + 1 + r.nextInt(h - 2 < 1 ? 1 : h - 2);
+                    if (!open_field(cx, cy)) continue;
+                    if (distance(cx, cy, en_x, en_y) < 5) continue;
+                    Tile& t = tiles[cx + cy * DG_MAP_W];
+                    t.terr = DG_TERR_CHEST;
+                    t.variant = (uint8_t)chapter;
+                    if (depth_ >= 2 && r.nextInt(100) < 40) t.mimic = 1;
+                    placed++;
+                }
+            } break;
+            case SPEC_TRAPROOM:    /* 陷阱房：室内铺隐藏陷阱（trap_known 仍 0，踩上才揭）*/
+                for (int y = rm.y0 + 1; y < rm.y1; y++) {
+                    for (int x = rm.x0 + 1; x < rm.x1; x++) {
+                        Tile& t = tiles[x + y * DG_MAP_W];
+                        if (t.terr != DG_TERR_FLOOR) continue;
+                        if (distance(x, y, en_x, en_y) < 4) continue;
+                        t.terr = DG_TERR_TRAP;
+                    }
+                }
+                break;
+            case SPEC_POOL:        /* 水池：室内灌浅水，留 1 格地板边框（水可通行，只是减速）*/
+                for (int y = rm.y0 + 1; y < rm.y1; y++) {
+                    for (int x = rm.x0 + 1; x < rm.x1; x++) {
+                        Tile& t = tiles[x + y * DG_MAP_W];
+                        if (t.terr != DG_TERR_FLOOR) continue;
+                        if (distance(x, y, en_x, en_y) < 3) continue;
+                        t.terr = DG_TERR_WATER;
+                    }
+                }
+                break;
+            default: break;
+            }
+        }
+    }
+
     /* --- 6. 上锁门：监狱章（5~8F）随机把 1~2 扇远离入口的门上锁 + 配钥匙 --- */
     int locked = 0;
     if (depth_ >= DG_CHAPTER_DEPTH && depth_ < DG_CHAPTER_DEPTH * 2) {
@@ -305,8 +445,7 @@ bool Level::generate(uint32_t base_seed, int depth_)
         secrets++;
     }
 
-    /* --- 8. 水塘 / 草皮：blob 生长，越深越多 --- */
-    int chapter = this->chapter();
+    /* --- 8. 水塘 / 草皮：blob 生长，越深越多（chapter 已在 5b 前算好）--- */
     int ponds = (chapter == 0 ? 2 : chapter == 1 ? 3 : 2) + r.nextInt(2);
     for (int p = 0; p < ponds; p++) {
         int x = r.nextInt(DG_MAP_W), y = r.nextInt(DG_MAP_H);
@@ -356,17 +495,25 @@ bool Level::generate(uint32_t base_seed, int depth_)
         if (c > 0) ri = r.nextInt(room_count);
         int cx = -1, cy = -1;
         if (!pick_in_room(this, r, rooms[ri], 30, en_x, en_y, 6, &cx, &cy)) continue;
-        tiles[cx + cy * DG_MAP_W].terr = DG_TERR_CHEST;
-        tiles[cx + cy * DG_MAP_W].variant = (uint8_t)chapter;   /* 木/铜/银/金 按章 */
+        if (!open_field_at(this, cx, cy)) continue;   /* 只放开敞内场，免得宝箱卡在走廊口断连 */
+        Tile& ct = tiles[cx + cy * DG_MAP_W];
+        ct.terr = DG_TERR_CHEST;
+        ct.variant = (uint8_t)chapter;   /* 木/铜/银/金 按章 */
+        if (depth_ >= 2 && r.nextInt(100) < 25) ct.mimic = 1;   /* 约四分之一是宝箱怪 */
     }
 
-    /* --- 11. 装饰柱（监狱章起，房间内孤柱） --- */
+    /* --- 11. 装饰柱（监狱章起，房间内孤柱；四邻皆地才摆，免切通路）--- */
     if (chapter >= 1) {
         int statues = r.nextInt(3);
         for (int s = 0; s < statues; s++) {
             int ri = r.nextInt(room_count);
             int cx = -1, cy = -1;
             if (!pick_in_room(this, r, rooms[ri], 20, en_x, en_y, 5, &cx, &cy)) continue;
+            if (cx < 1 || cy < 1 || cx >= DG_MAP_W - 1 || cy >= DG_MAP_H - 1) continue;
+            if (tiles[(cx - 1) + cy * DG_MAP_W].terr != DG_TERR_FLOOR ||
+                tiles[(cx + 1) + cy * DG_MAP_W].terr != DG_TERR_FLOOR ||
+                tiles[cx + (cy - 1) * DG_MAP_W].terr != DG_TERR_FLOOR ||
+                tiles[cx + (cy + 1) * DG_MAP_W].terr != DG_TERR_FLOOR) continue;
             tiles[cx + cy * DG_MAP_W].terr = DG_TERR_STATUE;
         }
     }
@@ -393,6 +540,32 @@ bool Level::generate(uint32_t base_seed, int depth_)
                 ? tiles[x + y * DG_MAP_W].variant            /* 宝箱 variant 已用 */
                 : tile_hash(x, y, base_seed ^ (uint32_t)depth_ * 0x01000193u);
         }
+    }
+
+    /* --- 13.5 可达性兵底：装饰与上锁都完事后，洪水填充确认入口能走到出口；
+     *         若不可达，依次把上锁门降回普通门、秘密门显形为门、最后把固态
+     *         装饰（宝箱/雕像，含 mimic 与 STATUARY/VAULT 摆放后周边又被整形
+     *         成门的边缘情形）还原为地板，直到通路打通。step 2 已保证全部房间
+     *         4 向连通，纯 FLOOR 网必然可达 —— 保证「每层有可达出口」是硬约束，
+     *         不会因稀 seed 软锁。--- */
+    if (!flood_exit_reachable(this)) {
+        for (int i = 0; i < LENGTH; i++)
+            if (tiles[i].terr == DG_TERR_LOCKED_DOOR) tiles[i].terr = DG_TERR_DOOR;
+        locked = 0;
+        if (!flood_exit_reachable(this)) {
+            for (int i = 0; i < LENGTH; i++)
+                if (tiles[i].terr == DG_TERR_SECRET) tiles[i].terr = DG_TERR_DOOR;
+            secrets = 0;
+        }
+        if (!flood_exit_reachable(this)) {
+            int cleared = 0;
+            for (int i = 0; i < LENGTH; i++)
+                if (tiles[i].terr == DG_TERR_CHEST || tiles[i].terr == DG_TERR_STATUE) {
+                    tiles[i].terr = DG_TERR_FLOOR; tiles[i].mimic = 0; cleared++;
+                }
+            ESP_LOGW(TAG, "depth=%d 清除固态装饰 %d 格以恢复出口可达", depth_, cleared);
+        }
+        ESP_LOGW(TAG, "depth=%d 出口不可达，已做可达性修复（unlock/显形/清固态）", depth_);
     }
 
     ESP_LOGI(TAG, "generate depth=%d rooms=%d entry=(%d,%d) exit=(%d,%d) locked=%d secret=%d",
