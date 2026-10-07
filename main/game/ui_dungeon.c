@@ -1073,8 +1073,11 @@ void sdgoods_console_ext_cmd(char c)
     if (c == 'v') {
         char dump[192];
         if (dg_api_debug_dump(dump, sizeof(dump)) > 0) ESP_LOGI(TAG, "%s", dump);
+        char bf[64];
+        if (dg_api_hero_buffs(bf, sizeof(bf)) > 0) ESP_LOGI(TAG, "B %s", bf);
         return;
     }
+    if (c == 'b') { dg_api_debug_buff(2, 8); ESP_LOGI(TAG, "ext_cmd: b (haste+8)"); return; }  /* 取证：施加 HASTE */
 
     /* 场景流直推（不经像素命中，取证确定性强） */
     switch (c) {

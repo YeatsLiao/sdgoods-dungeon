@@ -75,7 +75,8 @@ public:
     int      x = 0, y = 0;
     int      from_x = 0, from_y = 0;   /* 平滑移动：本段动画起点 */
     int      hp = 1, hp_max = 1;
-    int      speed = 1;                /* 行动速度倍率 */
+    int      speed = 16;               /* 行动速度（1/16 定点：16=1.0×，32=2.0×，上游口径）*/
+    uint16_t act_accum = 0;            /* 速度调度累加器（1/16 回合），M2 真实速度 */
     uint8_t  sheet = 0;                /* gfx::Sheet 句柄（渲染取图用） */
     uint8_t  flash_ticks = 0;          /* 受击闪白剩余动画帧 */
     uint8_t  move_anim = 255;          /* 0..254 = 正在从 from→(x,y) 插值 */
@@ -285,6 +286,7 @@ public:
 
     /* 调试注入用（串口 'v'）：一行导出英雄/相机/出口/物品/怪物 tile 坐标 */
     int  debug_dump(char* buf, int cap);
+    int  hero_buffs(char* buf, int cap);   /* 英雄生效 buff 列表（取证） */
 
     /* --- 回合与移动 --- */
     int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile */

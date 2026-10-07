@@ -170,6 +170,8 @@ int Mob::act()
     act_buffs();
     if (!is_alive()) return 1;
     if (has_buff(Buff::PARALYSIS)) return 1;
+    if (has_buff(Buff::SLEEP)) return 1;           /* 沉睡：受击才醒（见 damage） */
+    const bool rooted = has_buff(Buff::ROOTS);     /* 定身：不能移动，但贴身仍可攻击 */
 
     int dist = lv->distance(x, y, h->x, h->y);
     /* 视线：英雄能看见这只怪 ⇔ 怪也能看见英雄（同一张 FOV 位图，天然对称） */
@@ -189,7 +191,7 @@ int Mob::act()
     }
 
     if (has_buff(Buff::FRIGHT)) {
-        step_away(this, h->x, h->y);
+        if (!rooted) step_away(this, h->x, h->y);
         return 1;
     }
 
@@ -200,7 +202,7 @@ int Mob::act()
 
     if (state == Mob::WANDERING) {
         if (los && dist <= see_range) { state = Mob::HUNTING; }
-        else if (rand_int(4) == 0) {
+        else if (!rooted && rand_int(4) == 0) {
             /* 在home 4 格内随机飘，别把怪拉穿全图 */
             int nx = x + rand_int(3) - 1;
             int ny = y + rand_int(3) - 1;
@@ -217,7 +219,7 @@ int Mob::act()
 
     if (state != Mob::HUNTING) {
         /* 远离 home 太远的游荡怪慢慢走回去，避免全场怪堆在英雄脚边 */
-        if (lv->distance(x, y, home_x, home_y) > 10) step_toward(this, home_x, home_y);
+        if (lv->distance(x, y, home_x, home_y) > 10) { if (!rooted) step_toward(this, home_x, home_y); }
         return 1;
     }
 
@@ -258,17 +260,20 @@ int Mob::act()
     }
 
     if (state == Mob::FLEEING) {
+        if (rooted) return 1;
         if (!step_away(this, h->x, h->y)) state = Mob::HUNTING;
         return 1;
     }
 
-    step_toward(this, h->x, h->y);
+    if (!rooted) step_toward(this, h->x, h->y);
     return 1;
 }
 
 void Mob::damage(int dmg, const char* src)
 {
     Game& g = Game::instance();
+    /* 受击惊醒：清 SLEEP buff 并转入追击（SLEEPING 状态在 act() 里自然处理）*/
+    if (has_buff(Buff::SLEEP)) remove_buff(Buff::SLEEP);
     /* 分裂怪：掉血后概率在相邻格吐出一只小号（上游 Slime / Swarm 手感） */
     if (spec && (spec->flags & MF_SPLITTER) && hp - dmg >= 2 && g.ui_rng->nextInt(100) < 30) {
         Level* lv = level;

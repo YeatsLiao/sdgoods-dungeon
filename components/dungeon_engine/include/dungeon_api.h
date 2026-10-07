@@ -287,6 +287,14 @@ void dg_api_get_camera(int *x, int *y);
  * 供 PC 脚本定向点击，并做文字层取证（血量 / 金币 / 深度）。 */
 int dg_api_debug_dump(char *buf, int cap);
 
+/* 调试：把英雄当前生效的 buff 写成 "type:剩余回合 " 序列（供取证 'v' 旁路行）。
+ * 例 "haste:12 invis:8 "；无 buff 返回 0。 */
+int dg_api_hero_buffs(char *buf, int cap);
+
+/* 调试（仅取证用）：给英雄施加一个 buff。type 取引擎 Buff::Type 数值
+ * （1 slow 2 haste 3 invis 6 poison 7 burning…），duration 回合。 */
+void dg_api_debug_buff(int type, int duration);
+
 /* ===== 素材透出（v0.4：UI 按钮 / 图标全走上游图集） ===== */
 
 /* 素材是否可用（assets 分区烧了烘焙图）。false 时 UI 应回退纯色 + 文字。 */

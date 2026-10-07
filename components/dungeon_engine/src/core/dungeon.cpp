@@ -179,7 +179,7 @@ void Game::spawn_level_content() {
         m->attack_min = s->atk_min; m->attack_max = s->atk_max;
         m->defense = s->def; m->xp_in_kill = s->xp;
         m->see_range = s->see;
-        m->speed = (s->speed >= 32) ? 2 : 1;   /* 上游 baseSpeed=2 的怪（蟹/蝠）双倍速 */
+        m->speed = s->speed;                     /* 1/16 定点直接取物种表（蟹/蝠=32 双倍速）*/
         m->alignment = 1;                       /* ENEMY */
         m->state = (rng->nextInt(100) < 60) ? Mob::SLEEPING : Mob::WANDERING;
         m->level = level;
@@ -212,6 +212,7 @@ void Game::spawn_level_content() {
                     m->attack_min = boss->atk_min; m->attack_max = boss->atk_max;
                     m->defense = boss->def; m->xp_in_kill = boss->xp;
                     m->see_range = boss->see; m->alignment = 1;
+                    m->speed = boss->speed;
                     m->state = Mob::SLEEPING; m->level = level;
                     m->first_buff = nullptr; m->flash_ticks = 0; m->move_anim = 255;
                     m->anim_seed = (uint8_t)rng->nextInt(256);
@@ -438,14 +439,30 @@ bool Game::hero_try_step(int gx, int gy) {
     return true;
 }
 
-/* ===== 怪物回合 ===== */
+/* ===== 怪物回合（M2 真实速度调度）=====
+ * 每个英雄回合给每只怪累加「有效速度」（1/16 定点），满 16 才行动一次并扣 16：
+ *   speed=16 → 每英雄回合动 1 次；speed=32（蟹/蝠）→ 动 2 次；speed=8 → 每 2 回合动 1 次。
+ * 有效速度 = 物种 speed × 自身 HASTE(×2)/SLOW(÷2)，再按英雄状态折算：
+ *   英雄 HASTE → 怪相对慢一半（÷2）；英雄 SLOW → 怪相对快一倍（×2）。
+ * act_accum 跨回合保留，故非整数倍速度（如 0.5×）的节奏能正确累积。*/
 void Game::advance_mobs() {
     /* 用快照长度遍历：act 里可能 add_actor（召唤/分裂）扩大表 */
     int n = level->actor_count;
     for (int i = 1; i < n && i < level->actor_count; i++) {
         Actor* a = level->actors[i];
         if (!a || !a->is_alive()) continue;
-        a->act();
+        int eff = a->speed > 0 ? a->speed : 16;
+        if (a->has_buff(Buff::HASTE)) eff *= 2;
+        if (a->has_buff(Buff::SLOW))  eff /= 2;
+        if (hero->has_buff(Buff::HASTE)) eff /= 2;
+        if (hero->has_buff(Buff::SLOW))  eff *= 2;
+        if (eff < 1) eff = 1;
+        a->act_accum = (uint16_t)(a->act_accum + eff);
+        int guard = 0;
+        while (a->act_accum >= 16 && a->is_alive() && guard++ < 4) {
+            a->act();
+            a->act_accum -= 16;
+        }
     }
     /* 收割尸体 */
     for (int i = level->actor_count - 1; i >= 1; i--) {
@@ -460,6 +477,11 @@ void Game::advance_mobs() {
 /* ===== 回合结束：饥饿 / 回血 / 视野 / 怪 ===== */
 void Game::end_turn() {
     game_time++;
+
+    /* 英雄 buff 计时与周期结算（毒/烧掉血、加速/隐身/悬浮到期…）。
+     * v0.4 漏了这一步 → 英雄 buff 永不过期、中毒不掉血，M2 补上。 */
+    hero->act_buffs();
+    if (scene != DG_SCENE_IN_GAME) { fb_dirty = true; return; }  /* 毒发身亡 */
 
     /* 饥饿 */
     if (hero->energy > 0) hero->energy--;
@@ -901,6 +923,23 @@ int Game::debug_dump(char* buf, int cap) {
                 mobs++;
             }
         }
+    }
+    return n;
+}
+
+/* 英雄当前 buff 列表（取证用）："type:剩余 " 序列。 */
+int Game::hero_buffs(char* buf, int cap) {
+    if (!hero || cap <= 0) return 0;
+    static const char* kNames[Buff::TYPE_COUNT] = {
+        "none","slow","haste","invis","mindvision","levitation",
+        "poison","burning","sleep","paralysis","fright","roots","ointment",
+    };
+    int n = 0;
+    for (Buff* b = hero->first_buff; b; b = b->next) {
+        const char* nm = (b->type < Buff::TYPE_COUNT) ? kNames[b->type] : "?";
+        int w = snprintf(buf + n, cap - n, "%s:%d ", nm, b->duration);
+        if (w < 0 || n + w >= cap) break;
+        n += w;
     }
     return n;
 }

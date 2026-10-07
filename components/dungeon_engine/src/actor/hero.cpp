@@ -123,14 +123,17 @@ void Actor::act_buffs()
         bool dead = false;
         switch (b->type) {
         case Buff::POISON:
+            /* 药膏（OINTMENT）免疫中毒：不掉血，毒计时自然耗尽 */
+            if (get_buff(Buff::OINTMENT)) break;
+            hp -= 1;
+            g.add_float(x, y, "-1", 0x8B1C);
+            g.anim_running = true;
+            dead = (hp <= 0);
+            break;
         case Buff::BURNING:
             hp -= 1;
-            {
-                char buf[8];
-                snprintf(buf, sizeof(buf), "-1");
-                g.add_float(x, y, buf, b->type == Buff::POISON ? 0x8B1C : 0xF900);
-                g.anim_running = true;
-            }
+            g.add_float(x, y, "-1", 0xF900);
+            g.anim_running = true;
             dead = (hp <= 0);
             break;
         default:

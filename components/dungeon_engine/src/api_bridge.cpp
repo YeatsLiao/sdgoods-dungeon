@@ -73,6 +73,11 @@ int dg_api_get_stats_text(char *buf, int cap) { return Game::instance().get_stat
 void dg_api_get_hero_pos(int *x, int *y) { Game::instance().get_hero_pos(x, y); }
 void dg_api_get_camera(int *x, int *y) { Game::instance().get_cam(x, y); }
 int  dg_api_debug_dump(char *buf, int cap) { return Game::instance().debug_dump(buf, cap); }
+int  dg_api_hero_buffs(char *buf, int cap) { return Game::instance().hero_buffs(buf, cap); }
+void dg_api_debug_buff(int type, int duration) {
+    Hero* h = Game::instance().hero;
+    if (h && type > 0 && type < Buff::TYPE_COUNT) h->add_buff((Buff::Type)type, duration);
+}
 
 /* ===== 素材透出 ===== */
 bool dg_api_assets_ready(void) { return gfx::ready(); }
