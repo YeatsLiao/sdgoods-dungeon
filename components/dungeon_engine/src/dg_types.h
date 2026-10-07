@@ -250,6 +250,7 @@ public:
     void on_tap(int gx, int gy);
     void on_long_press(int gx, int gy);
     void on_button(dg_btn_id_t btn);
+    bool step(int dx, int dy);         /* 方向键逐格移动（M1） */
 
     /* --- 场景流 --- */
     void goto_title();

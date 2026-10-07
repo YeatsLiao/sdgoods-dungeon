@@ -56,6 +56,7 @@ void dg_api_on_viewport_tap(int px, int py) {
 
 void dg_api_on_long_press(int gx, int gy) { Game::instance().on_long_press(gx, gy); }
 void dg_api_on_button(dg_btn_id_t btn) { Game::instance().on_button(btn); }
+bool dg_api_step(int dx, int dy) { return Game::instance().step(dx, dy); }
 
 /* ===== 场景流 ===== */
 void dg_api_goto_title(void) { Game::instance().goto_title(); }

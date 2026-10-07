@@ -103,6 +103,10 @@ static lv_obj_t *s_gold_lbl   = NULL;
 static lv_obj_t *s_lvl_lbl    = NULL;
 static lv_obj_t *s_msg_lbl    = NULL;
 static lv_obj_t *s_descend_btn = NULL;  /* 楼梯高亮用 */
+/* M1 瞬时消息 toast：新消息出现时显示，TOAST_MS 后自动淡隐，不再常驻盖图。 */
+#define DG_TOAST_MS 2800
+static uint32_t s_msg_expire_ms = 0;
+static char     s_msg_last[96]  = {0};
 
 /* 独立页面 */
 static lv_obj_t *s_title_layer = NULL;
@@ -295,47 +299,101 @@ static void hud_build(lv_obj_t *parent)
     lv_obj_set_style_bg_color(s_en_bar, lv_color_hex(0xd0a040), LV_PART_MAIN);
     lv_obj_clear_flag(s_en_bar, LV_OBJ_FLAG_CLICKABLE);
 
-    /* 消息行（胶囊下沿，只读，仍在圆内） */
+    /* 消息 toast（胶囊下沿，只读，仍在圆内）：初始隐藏，有新消息时闪现并自动淡隐 */
     s_msg_lbl = lv_label_create(parent);
     lv_label_set_text(s_msg_lbl, "");
     lv_obj_set_style_text_font(s_msg_lbl, &si_yuan_black_icon_14, LV_PART_MAIN);
     lv_obj_set_style_text_color(s_msg_lbl, lv_color_hex(0xd8d0a0), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_msg_lbl, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_msg_lbl, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_msg_lbl, LV_OPA_60, LV_PART_MAIN);
     lv_obj_set_style_radius(s_msg_lbl, 8, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s_msg_lbl, 3, LV_PART_MAIN);
-    lv_obj_set_width(s_msg_lbl, 200);
+    lv_obj_set_width(s_msg_lbl, 210);
     lv_obj_set_style_text_align(s_msg_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_clear_flag(s_msg_lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_msg_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_align(s_msg_lbl, LV_ALIGN_TOP_MID, 0, 72);
+}
+
+/* ---- M1 圆屏操控：半透明方向键（lv_line 箭头）+ 精简动作键 ----
+ * 依据同硬件 DOOM 已验证规范：地图保持满圆可见，操控件做成半透明白色
+ * 悬浮键、放在圆盘边缘裁切区（y≥190），中心英雄区不遮挡；方向键解决
+ * 「小屏点格子不准」，tap-to-move 降为辅助（上半屏无遮挡仍可点）。 */
+
+/* 方向键箭头：0 上 1 右 2 下 3 左。lv_line 的点是对象内坐标，需常驻。 */
+static lv_point_t s_chev[4][3] = {
+    { {4,15},{12,7},{20,15} },   /* 上 ^ */
+    { {9,4},{17,12},{9,20} },    /* 右 > */
+    { {4,9},{12,17},{20,9} },    /* 下 v */
+    { {15,4},{7,12},{15,20} },   /* 左 < */
+};
+
+static void on_dpad_cb(lv_event_t *e)
+{
+    int dir = (int)(intptr_t)lv_event_get_user_data(e);
+    static const int8_t dxy[4][2] = { {0,-1},{1,0},{0,1},{-1,0} };
+    dg_api_step(dxy[dir][0], dxy[dir][1]);
+}
+
+/* 半透明圆形幽灵键（白色描边 + 淡白底），落在圆盘边缘裁切区 */
+static lv_obj_t *ghost_btn_create(lv_obj_t *parent, int cx, int cy, int d,
+                                  lv_event_cb_t cb, int id)
+{
+    lv_obj_t *b = lv_btn_create(parent);
+    lv_obj_set_size(b, d, d);
+    lv_obj_set_pos(b, cx - d / 2, cy - d / 2);
+    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(b, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(b, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_border_color(b, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(b, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(b, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(b, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(b, 0, LV_PART_MAIN);
+    lv_obj_set_ext_click_area(b, 6);
+    if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, (void *)(intptr_t)id);
+    return b;
 }
 
 static void toolbar_build(lv_obj_t *parent)
 {
     s_toolbar = parent;
-    /* 底部圆弧 6 键，沿半径 R 从右下扫到左下（屏心为原点，y 向下为正）。
-     * btn_d=52 → icon 32 进圆不露角；键心到屏心 ≈ R=116，加半对角 26 → 142<180 ✓ */
-    static const struct {
-        int sheet, cell, btn;
-        int deg;               /* 0=正右，向下为正（下半圆） */
-    } keys[] = {
-        { DG_SHEET_ICONS, IC_BAG,     DG_BTN_INVENTORY, 34 },
-        { DG_SHEET_ICONS, IC_GAMEPAD, DG_BTN_WAIT,      63 },
-        { DG_SHEET_ICONS, IC_SEARCH,  DG_BTN_SEARCH,    90 },
-        { DG_SHEET_ICONS, IC_SWORD,   DG_BTN_EQUIP,     117 },
-        { DG_SHEET_ICONS, IC_UPDOWN,  DG_BTN_DESCEND,   146 },
-        { DG_SHEET_ICONS, IC_SCROLL,  DG_BTN_MENU,      175 },
-    };
-    const int R = 116, cx = DG_SCREEN_W / 2, cy = DG_SCREEN_H / 2, d = 52;
-    for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-        float a = (float)keys[i].deg * 3.14159265f / 180.0f;
-        int bx = cx + (int)(R * cosf(a)) - d / 2;
-        int by = cy + (int)(R * sinf(a)) - d / 2;
-        lv_obj_t *b = icon_btn_create(parent, keys[i].sheet, keys[i].cell, d,
-                                      on_toolbar_cb, keys[i].btn, BTN_BG);
-        lv_obj_set_pos(b, bx, by);
-        if (keys[i].btn == DG_BTN_DESCEND) s_descend_btn = b;
+
+    /* 左下：4 向方向键（逐格移动 / 朝该方向攻击），键心距 44，中心透图 */
+    const int dcx = 108, dcy = 248, arm = 44;
+    static const int8_t arm_pos[4][2] = {
+        { 0, -arm }, { arm, 0 }, { 0, arm }, { -arm, 0 } };   /* 上右下左 */
+    for (int dir = 0; dir < 4; dir++) {
+        int cx = dcx + arm_pos[dir][0], cy = dcy + arm_pos[dir][1];
+        lv_obj_t *b = ghost_btn_create(parent, cx, cy, 44, on_dpad_cb, dir);
+        lv_obj_t *ln = lv_line_create(b);
+        lv_line_set_points(ln, s_chev[dir], 3);
+        lv_obj_set_style_line_color(ln, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_line_width(ln, 3, LV_PART_MAIN);
+        lv_obj_set_style_line_rounded(ln, true, LV_PART_MAIN);
+        lv_obj_set_size(ln, 24, 24);
+        lv_obj_clear_flag(ln, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_center(ln);
     }
+
+    /* 右下：4 个动作键（走上游图标），全部落在圆内；装备收进背包，不再占键位 */
+    static const struct { int sheet, cell, btn, cx, cy; } acts[] = {
+        { DG_SHEET_ICONS, IC_GAMEPAD, DG_BTN_WAIT,      216, 210 },
+        { DG_SHEET_ICONS, IC_SEARCH,  DG_BTN_SEARCH,    258, 246 },
+        { DG_SHEET_ICONS, IC_BAG,     DG_BTN_INVENTORY, 240, 292 },
+        { DG_SHEET_ICONS, IC_SCROLL,  DG_BTN_MENU,      196, 296 },
+    };
+    for (unsigned i = 0; i < sizeof(acts) / sizeof(acts[0]); i++) {
+        lv_obj_t *b = icon_btn_create(parent, acts[i].sheet, acts[i].cell, 44,
+                                      on_toolbar_cb, acts[i].btn, BTN_BG);
+        lv_obj_set_pos(b, acts[i].cx - 22, acts[i].cy - 22);
+    }
+
+    /* 下楼键：站在出口才显示，底部正中（D-pad 下键与背包键之间） */
+    s_descend_btn = icon_btn_create(parent, DG_SHEET_ICONS, IC_UPDOWN, 46,
+                                    on_toolbar_cb, DG_BTN_DESCEND, BTN_BG);
+    lv_obj_set_pos(s_descend_btn, 180 - 23, 300 - 23);
+    lv_obj_add_flag(s_descend_btn, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void game_layer_build(void)
@@ -770,15 +828,41 @@ void ui_dungeon_poll(void)
                 lv_label_set_text(s_lvl_lbl, b);
                 snprintf(b, sizeof(b), "%d金", hud.gold);
                 lv_label_set_text(s_gold_lbl, b);
-                /* 楼梯高亮：站在出口时 DESCEND 键描边变亮 */
+                /* 下楼键：站在出口才显示（否则藏起，不占地图） */
                 if (s_descend_btn) {
+                    set_hidden(s_descend_btn, !hud.on_stairs);
                     lv_obj_set_style_border_color(s_descend_btn,
                         lv_color_hex(hud.on_stairs ? 0xd0a040 : 0x556072), LV_PART_MAIN);
                 }
             }
             char msg[96];
-            if (dg_api_get_message(msg, sizeof(msg), 0) > 0)
-                lv_label_set_text(s_msg_lbl, msg);
+            if (dg_api_get_message(msg, sizeof(msg), 0) > 0) {
+                /* 只在“换了新消息”时重置 toast，同一句不反复刷新计时 */
+                if (strcmp(msg, s_msg_last) != 0) {
+                    snprintf(s_msg_last, sizeof(s_msg_last), "%s", msg);
+                    lv_label_set_text(s_msg_lbl, msg);
+                    lv_obj_clear_flag(s_msg_lbl, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_set_style_opa(s_msg_lbl, LV_OPA_COVER, LV_PART_MAIN);
+                    s_msg_expire_ms = now + DG_TOAST_MS;
+                }
+            }
+        }
+    }
+
+    /* toast 自动淡隐（每帧跑，不受 150ms 门控）：最后 500ms 渐隐，到期藏起。
+     * 非游戏态（背包/菜单/结算）不干预，交由场景切换自然隐藏。 */
+    if (s_msg_lbl && s_msg_expire_ms &&
+        (sc == DG_SCENE_IN_GAME || sc == DG_SCENE_INVENTORY)) {
+        if (now >= s_msg_expire_ms) {
+            lv_obj_add_flag(s_msg_lbl, LV_OBJ_FLAG_HIDDEN);
+            s_msg_expire_ms = 0;
+            /* 注意：不清 s_msg_last。引擎 get_message 会持续返回同一句（常驻），
+             * 若清空则下一帧又判定为“新消息”重新弹出 → toast 永远淡不掉。
+             * 保留末次文本，只有真正不同的新消息才重新弹。 */
+        } else {
+            uint32_t left = s_msg_expire_ms - now;
+            if (left < 500)
+                lv_obj_set_style_opa(s_msg_lbl, (lv_opa_t)(255 * left / 500), LV_PART_MAIN);
         }
     }
 

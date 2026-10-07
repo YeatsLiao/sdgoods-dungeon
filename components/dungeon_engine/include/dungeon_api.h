@@ -239,6 +239,11 @@ void dg_api_on_long_press(int gx, int gy);
 /* 功能键（见 dg_btn_id_t）。 */
 void dg_api_on_button(dg_btn_id_t btn);
 
+/* 方向键逐格移动（M1 圆屏操控）：dx,dy ∈ {-1,0,1}，一次一步（回合制）。
+ * 目标格有敌人则攻击、是门/箱/陷阱/物品则按 hero_try_step 的既有语义处理；
+ * 走不动（墙/锁门无钥匙）返回 false 且不消耗回合。 */
+bool dg_api_step(int dx, int dy);
+
 /* ===== 场景流（v0.4 标题 / 选职业 / 菜单） ===== */
 
 /* 回标题页（会丢弃当前局；UI 侧应先确认）。 */

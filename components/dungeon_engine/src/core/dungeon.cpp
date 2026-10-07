@@ -586,6 +586,26 @@ void Game::on_tap(int gx, int gy) {
     if (acted) { end_turn(); fb_dirty = true; }
 }
 
+/* ===== 方向键逐格移动（M1 圆屏操控）===== */
+bool Game::step(int dx, int dy) {
+    if (scene != DG_SCENE_IN_GAME) return false;
+    if (dx < -1) dx = -1; else if (dx > 1) dx = 1;
+    if (dy < -1) dy = -1; else if (dy > 1) dy = 1;
+    if (dx == 0 && dy == 0) { on_button(DG_BTN_WAIT); return true; }
+    path_len = path_head = 0;                 /* 手动一步：取消自动寻路 */
+    bool acted = hero_try_step(hero->x + dx, hero->y + dy);
+    if (acted) {
+        end_turn();
+        fb_dirty = true;
+        if (level->at(hero->x, hero->y).terr == DG_TERR_EXIT)
+            log("脚下是向下的楼梯 —— 按下楼键继续。");
+    } else {
+        sfx(DG_SFX_ERROR);
+        fb_dirty = true;
+    }
+    return acted;
+}
+
 void Game::on_long_press(int gx, int gy) {
     if (scene != DG_SCENE_IN_GAME) return;
     if (gx < 0 || gx >= DG_MAP_W || gy < 0 || gy >= DG_MAP_H) return;
