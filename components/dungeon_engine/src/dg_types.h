@@ -164,7 +164,9 @@ public:
     int  xp_in_kill = 0;
     int  see_range = 8;
     uint8_t state = 0;             /* 见 State */
-    int  home_x = 0, home_y = 0;   /* 游荡锚点（别把怪放风筝拉走） */
+    int  home_x = 0, home_y = 0;   /* 游荡锚点（别把怪放风筝拉走）*/
+    uint32_t last_hurt_time = 0;   /* 上次受伤的英雄回合（Goo 愈合判定，M3）*/
+    uint32_t last_summon_time = 0; /* 上次召唤的英雄回合（召唤系冷却，M3）*/
 
     int act() override;
     int damageRoll();
@@ -287,6 +289,7 @@ public:
     /* 调试注入用（串口 'v'）：一行导出英雄/相机/出口/物品/怪物 tile 坐标 */
     int  debug_dump(char* buf, int cap);
     int  hero_buffs(char* buf, int cap);   /* 英雄生效 buff 列表（取证） */
+    void debug_m3_selftest();              /* M3 怪物 AI / 首领机制自检（取证，串口 'k'）*/
 
     /* --- 回合与移动 --- */
     int  cam_x = 0, cam_y = 0;                /* 主视窗左上 tile */

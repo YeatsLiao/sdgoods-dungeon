@@ -38,8 +38,10 @@ int Mob::attackSkill(Actor* target)
 {
     (void)target;
     int acc = spec ? spec->acc : 20;
-    /* 越深的普通怪随层微涨（首领不吃这条，它们自带数值） */
+    /* 越深的普通怪随层微涨（首领不吃这条，它们自带数值）*/
     if (level && !(spec && (spec->flags & MF_BOSS))) acc += level->depth;
+    /* 野兽人狂暴（上游 Rabid Brute）：血量低于一半时命中大涨 */
+    if (spec && spec->sheet == (uint8_t)gfx::SH_MOB_BRUTE && hp * 2 < hp_max) acc += 10;
     return acc;
 }
 
@@ -111,6 +113,11 @@ static void ranged_attack(Mob* m, Hero* h)
     /* 上游远程命中同样 acuRoll vs defRoll（magic 只放大 acu 权重，此处简化为直 roll） */
     if (rollHit(g.ui_rng, ak, df)) {
         h->damage(m->damageRoll(), m->name_key);
+        /* 蜘蛛（Spinner）：远程命中吐丝缠腿 → 英雄定身 ROOTS */
+        if (m->spec && m->spec->sheet == (uint8_t)gfx::SH_MOB_SPINNER) {
+            h->add_buff(Buff::ROOTS, 3);
+            g.log("蜘蛛吐丝缠住了你的腿！");
+        }
     } else {
         g.add_float(h->x, h->y, "MISS", 0xAD55);
     }
@@ -160,6 +167,29 @@ static void summon_minion(Mob* m, JavaRandom* r)
     }
 }
 
+/* 瞬间移动（萨满专属）：受击后闪到半径 4 内的可通行空格，拉开身位 */
+static void teleport_near(Mob* m, JavaRandom* r)
+{
+    Game& g = Game::instance();
+    Level* lv = m->level;
+    for (int attempt = 0; attempt < 16; attempt++) {
+        int nx = m->x + r->nextInt(9) - 4;
+        int ny = m->y + r->nextInt(9) - 4;
+        if (nx == m->x && ny == m->y) continue;
+        if (nx < 0 || ny < 0 || nx >= DG_MAP_W || ny >= DG_MAP_H) continue;
+        if (!lv->passable(nx, ny) || lv->at(nx, ny).actor) continue;
+        g.add_beam(m->x, m->y, nx, ny, 0x8FE3);       /* 紫白：瞬移闪光 */
+        lv->at(m->x, m->y).actor = nullptr;
+        m->from_x = nx; m->from_y = ny; m->move_anim = 255;  /* 瞬移不做插值 */
+        m->set_pos(nx, ny);
+        lv->at(nx, ny).actor = m;
+        m->home_x = nx; m->home_y = ny;               /* 新家，别立刻走回去 */
+        g.log("萨满化作一团紫光，闪到别处。");
+        g.sfx(DG_SFX_ZAP);
+        return;
+    }
+}
+
 int Mob::act()
 {
     Game& g = Game::instance();
@@ -172,6 +202,17 @@ int Mob::act()
     if (has_buff(Buff::PARALYSIS)) return 1;
     if (has_buff(Buff::SLEEP)) return 1;           /* 沉睡：受击才醒（见 damage） */
     const bool rooted = has_buff(Buff::ROOTS);     /* 定身：不能移动，但贴身仍可攻击 */
+
+    /* 腐蚀之胶（Goo）：脱离受击 10 回合后自我愈合，逼玩家持续输出 */
+    if (spec && spec->sheet == (uint8_t)gfx::SH_MOB_GOO && hp < hp_max &&
+        (int)(g.game_time - last_hurt_time) >= 10) {
+        int heal = hp_max / 10;
+        if (heal < 1) heal = 1;
+        hp += heal;
+        if (hp > hp_max) hp = hp_max;
+        g.add_float(x, y, "+", 0x7FE0);
+        g.log("腐蚀之胶正在愈合——别停下攻击！");
+    }
 
     int dist = lv->distance(x, y, h->x, h->y);
     /* 视线：英雄能看见这只怪 ⇔ 怪也能看见英雄（同一张 FOV 位图，天然对称） */
@@ -195,9 +236,11 @@ int Mob::act()
         return 1;
     }
 
-    /* 首领：每 12 回合叫一次援兵 */
-    if (spec && (spec->flags & MF_SUMMONER) && (g.game_time % 12) == 0) {
+    /* 首领：受召后每 10 回合叫一次援兵（冷却式，不再绑全局时间取模）*/
+    if (spec && (spec->flags & MF_SUMMONER) &&
+        (int)(g.game_time - last_summon_time) >= 10) {
         summon_minion(this, g.ui_rng);
+        last_summon_time = g.game_time;
     }
 
     if (state == Mob::WANDERING) {
@@ -274,6 +317,12 @@ void Mob::damage(int dmg, const char* src)
     Game& g = Game::instance();
     /* 受击惊醒：清 SLEEP buff 并转入追击（SLEEPING 状态在 act() 里自然处理）*/
     if (has_buff(Buff::SLEEP)) remove_buff(Buff::SLEEP);
+    /* 记录受击时刻（Goo 愈合判定依赖），并让萨满概率瞬移拉开身位 */
+    last_hurt_time = g.game_time;
+    if (spec && spec->sheet == (uint8_t)gfx::SH_MOB_SHAMAN && hp - dmg > 0 &&
+        g.ui_rng->nextInt(100) < 40) {
+        teleport_near(this, g.ui_rng);
+    }
     /* 分裂怪：掉血后概率在相邻格吐出一只小号（上游 Slime / Swarm 手感） */
     if (spec && (spec->flags & MF_SPLITTER) && hp - dmg >= 2 && g.ui_rng->nextInt(100) < 30) {
         Level* lv = level;
@@ -341,6 +390,148 @@ void Mob::die()
     }
     Actor::die();
     g.free_mob(this);
+}
+
+/* ===== M3 取证：怪物专属 AI + 首领机制自检（串口 'k' 触发，直接打机读日志）=====
+ * 不依赖串口导航（三个首领层逐个走位太脆），而是直接把相关怪物拉进
+ * 可复现语境里跑关键分支，逐项 PASS/FAIL 走 ESP_LOGI，play_test 从日志里抢。 */
+static Mob* m3_find_by_sheet(int sheet)
+{
+    Game& g = Game::instance();
+    Level* lv = g.level;
+    if (!lv) return nullptr;
+    for (int i = 1; i < lv->actor_count; i++) {          /* [0] 永远是英雄 */
+        Mob* m = static_cast<Mob*>(lv->actors[i]);
+        if (m && m->is_alive() && m->sheet == sheet) return m;
+    }
+    return nullptr;
+}
+
+void Game::debug_m3_selftest()
+{
+    Game& g = *this;
+    if (scene != DG_SCENE_IN_GAME) g.new_game(DG_CLASS_WARRIOR, 20261006u);
+    if (!hero || !level) { ESP_LOGE("dg.m3", "M3 SELFTEST no-hero/level"); return; }
+
+    /* 探活期间让英雄不阵亡，免得 probe 中途 die() 改场景 */
+    hero->hp_max = 100000; hero->hp = 100000;
+    ESP_LOGI("dg.m3", "M3 SELFTEST BEGIN");
+
+    auto warp = [&](int d0) {
+        depth = d0; level->depth = d0;
+        level->generate(seed, d0);
+        hero->first_buff = nullptr;
+        hero->set_pos(level->entrance_pos % DG_MAP_W, level->entrance_pos / DG_MAP_W);
+        hero->from_x = hero->x; hero->from_y = hero->y; hero->move_anim = 255;
+        path_len = path_head = 0;
+        g.spawn_level_content();
+        recalc_fov();
+    };
+    auto bring_next_to = [&](Mob* m) -> bool {
+        static const int dx8[8] = { 1,-1, 0, 0, 1, 1,-1,-1 };
+        static const int dy8[8] = { 0, 0, 1,-1, 1,-1, 1,-1 };
+        if (level->at(m->x, m->y).actor == m) level->at(m->x, m->y).actor = nullptr;
+        for (int i = 0; i < 8; i++) {
+            int nx = hero->x + dx8[i], ny = hero->y + dy8[i];
+            if (!level->passable(nx, ny) || level->at(nx, ny).actor) continue;
+            m->from_x = m->x = nx; m->from_y = m->y = ny; m->move_anim = 255;
+            m->home_x = nx; m->home_y = ny;
+            level->at(nx, ny).actor = m;
+            return true;
+        }
+        return false;
+    };
+
+    /* ---- 1. Goo 愈合：脱受击 ≥10 回合→回血；刚被打→不回 ---- */
+    warp(3); game_time = 500;                              /* 4F */
+    Mob* goo = m3_find_by_sheet((int)gfx::SH_MOB_GOO);
+    if (goo) {
+        bring_next_to(goo);
+        goo->state = Mob::HUNTING;
+        goo->hp = goo->hp_max - 25;
+        goo->last_hurt_time = game_time - 20;
+        int before = goo->hp; goo->act(); int after = goo->hp;
+        ESP_LOGI("dg.m3", "M3 GOO_HEAL %d->%d %s", before, after, after > before ? "PASS" : "FAIL");
+        goo->hp = goo->hp_max - 25;
+        goo->last_hurt_time = game_time;                   /* 刚被打 */
+        int b2 = goo->hp; goo->act(); int a2 = goo->hp;
+        ESP_LOGI("dg.m3", "M3 GOO_NOHEAL %d->%d %s", b2, a2, a2 == b2 ? "PASS" : "FAIL");
+    } else ESP_LOGE("dg.m3", "M3 GOO no-boss FAIL");
+
+    /* ---- 2. 首领召唤（矮人之王 12F，MF_SUMMONER）：冷却到→叫援兵；刚叫过→冷却中 ---- */
+    warp(11); game_time = 800;                             /* 12F */
+    Mob* king = m3_find_by_sheet((int)gfx::SH_MOB_KING);
+    if (king) {
+        bring_next_to(king);
+        king->state = Mob::HUNTING;
+        king->last_summon_time = game_time - 30;
+        int before = level->actor_count; king->act(); int after = level->actor_count;
+        ESP_LOGI("dg.m3", "M3 SUMMON %d->%d %s", before, after, after > before ? "PASS" : "FAIL");
+        int b2 = level->actor_count; king->act(); int a2 = level->actor_count;
+        ESP_LOGI("dg.m3", "M3 SUMMON_COOLDOWN %d->%d %s", b2, a2, a2 == b2 ? "PASS" : "FAIL");
+    } else ESP_LOGE("dg.m3", "M3 KING no-boss FAIL");
+
+    /* ---- 3. 野兽人狂暴：半血以下命中 +10 ---- */
+    {
+        Mob* b = g.alloc_mob();
+        if (b) {
+            const MobSpec* s = &MOB_SPECS[MOB_BRUTE];
+            b->spec = s; b->sheet = s->sheet; b->name_key = s->name;
+            b->hp_max = s->hp; b->hp = s->hp; b->level = level; b->alignment = 1;
+            int acc_full = b->attackSkill(hero);
+            b->hp = s->hp / 2 - 1;
+            int acc_rage = b->attackSkill(hero);
+            ESP_LOGI("dg.m3", "M3 BRUTE_RAGE %d->%d %s", acc_full, acc_rage, acc_rage == acc_full + 10 ? "PASS" : "FAIL");
+            g.free_mob(b);
+        }
+    }
+
+    /* ---- 4. 萨满受击瞬移：多次受击，位置变过即 PASS ---- */
+    {
+        Mob* sm = g.alloc_mob();
+        if (sm) {
+            const MobSpec* s = &MOB_SPECS[MOB_SHAMAN];
+            sm->spec = s; sm->sheet = s->sheet; sm->name_key = s->name;
+            sm->hp_max = s->hp; sm->hp = s->hp; sm->level = level; sm->alignment = 1;
+            bring_next_to(sm);
+            bool moved = false;
+            for (int t = 0; t < 40 && !moved; t++) {
+                int ox = sm->x, oy = sm->y;
+                sm->hp = sm->hp_max;                        /* 保持存活，专测瞬移 */
+                sm->damage(3, "probe");
+                if (sm->x != ox || sm->y != oy) moved = true;
+            }
+            ESP_LOGI("dg.m3", "M3 SHAMAN_TELEPORT %s", moved ? "PASS" : "FAIL");
+            if (level->at(sm->x, sm->y).actor == sm) level->at(sm->x, sm->y).actor = nullptr;
+            g.free_mob(sm);
+        }
+    }
+
+    /* ---- 5. 蜘蛛结网：远程命中上 ROOTS ---- */
+    {
+        Mob* sp = g.alloc_mob();
+        if (sp) {
+            const MobSpec* s = &MOB_SPECS[MOB_SPINNER];
+            sp->spec = s; sp->sheet = s->sheet; sp->name_key = s->name;
+            sp->hp_max = s->hp; sp->hp = s->hp; sp->level = level; sp->alignment = 1;
+            bring_next_to(sp);
+            hero->remove_buff(Buff::ROOTS);
+            bool rooted = false;
+            for (int t = 0; t < 40 && !rooted; t++) {
+                ranged_attack(sp, hero);
+                if (hero->has_buff(Buff::ROOTS)) rooted = true;
+            }
+            ESP_LOGI("dg.m3", "M3 SPINNER_ROOTS %s", rooted ? "PASS" : "FAIL");
+            hero->remove_buff(Buff::ROOTS);
+            if (level->at(sp->x, sp->y).actor == sp) level->at(sp->x, sp->y).actor = nullptr;
+            g.free_mob(sp);
+        }
+    }
+
+    /* 收尾：回一层干净开局，不破坏玩家现场 */
+    warp(0); game_time = 1;
+    hero->hp_max = 20; hero->hp = 20;
+    ESP_LOGI("dg.m3", "M3 SELFTEST END");
 }
 
 }  /* namespace dg */

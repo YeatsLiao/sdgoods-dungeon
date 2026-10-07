@@ -295,6 +295,10 @@ int dg_api_hero_buffs(char *buf, int cap);
  * （1 slow 2 haste 3 invis 6 poison 7 burning…），duration 回合。 */
 void dg_api_debug_buff(int type, int duration);
 
+/* 调试（仅取证用）：M3 怪物专属 AI + 首领机制自检——直接跑 Goo 愈合 / 首领召唤 /
+ * 野兽人狂暴 / 萨满瞬移 / 蜘蛛结网 关键分支，逐项 ESP_LOGI 打 "M3 ... PASS/FAIL"。 */
+void dg_api_debug_m3(void);
+
 /* ===== 素材透出（v0.4：UI 按钮 / 图标全走上游图集） ===== */
 
 /* 素材是否可用（assets 分区烧了烘焙图）。false 时 UI 应回退纯色 + 文字。 */

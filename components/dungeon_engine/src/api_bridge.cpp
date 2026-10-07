@@ -78,6 +78,7 @@ void dg_api_debug_buff(int type, int duration) {
     Hero* h = Game::instance().hero;
     if (h && type > 0 && type < Buff::TYPE_COUNT) h->add_buff((Buff::Type)type, duration);
 }
+void dg_api_debug_m3(void) { Game::instance().debug_m3_selftest(); }
 
 /* ===== 素材透出 ===== */
 bool dg_api_assets_ready(void) { return gfx::ready(); }
