@@ -81,6 +81,7 @@ void dg_api_debug_buff(int type, int duration) {
 void dg_api_debug_m3(void) { Game::instance().debug_m3_selftest(); }
 void dg_api_debug_m4(void) { Game::instance().debug_m4_selftest(); }
 void dg_api_debug_m5(void) { Game::instance().debug_m5_selftest(); }
+void dg_api_debug_m6(void) { Game::instance().debug_m6_fullrun(); }
 
 /* ===== 素材透出 ===== */
 bool dg_api_assets_ready(void) { return gfx::ready(); }

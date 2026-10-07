@@ -295,6 +295,7 @@ public:
     void debug_m3_selftest();              /* M3 怪物 AI / 首领机制自检（取证，串口 'k'）*/
     void debug_m4_selftest();              /* M4 物品全谱自检（取证，串口 'p'）*/
     void debug_m5_selftest();              /* M5 关卡生成可达性/房间多样/宝箱怪自检（取证，串口 'y'）*/
+    void debug_m6_fullrun();               /* M6 全程通关链路（1→12F→护身符→WIN，取证，串口 'u'）*/
 
     /* 鉴定系统：药水/卷轴/戒指/法杖按 (kind,sub) 全局鉴定一次，之后所有同类都显示真名。
      * 装备（武器/护甲）恒已知。bit 索引 = kind，位 = sub（各类型变体数 ≤8）。*/

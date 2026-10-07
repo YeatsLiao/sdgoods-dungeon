@@ -307,6 +307,11 @@ void dg_api_debug_m4(void);
  * 入/出口不同，并验证宝箱怪开箱变身；逐项 ESP_LOGI 打 "M5 ... PASS/FAIL"。 */
 void dg_api_debug_m5(void);
 
+/* 调试（仅取证用）：M6 全程通关链路——超配英雄沿真实 hero_try_step/descend_stairs
+ * 走满 1→12F 并拾护身符判 WIN，逐层打 HP/EXP/LV/GOLD 曲线，多 seed 压力；
+ * 逐项 ESP_LOGI 打 "M6 ... PASS/FAIL"。 */
+void dg_api_debug_m6(void);
+
 /* ===== 素材透出（v0.4：UI 按钮 / 图标全走上游图集） ===== */
 
 /* 素材是否可用（assets 分区烧了烘焙图）。false 时 UI 应回退纯色 + 文字。 */

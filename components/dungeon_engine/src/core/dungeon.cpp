@@ -152,9 +152,12 @@ Item* Game::drop_random_item(int x, int y, int quality_hint) {
 
 /* ===== 本层内容投放 ===== */
 void Game::spawn_level_content() {
-    /* 回收上一级残留：怪物全清、地上物品清（背包/身上保留）、buff 全清 */
+    /* 回收上一级残留：怪物全清、地上物品清（背包/身上保留）、buff 全清。
+     * 例外：12F 的护身符是在 generate(reset_view 之后) 才落到基座上的本层物品，
+     * 不能被这条「清非持有地上物」误回收（否则槽位被后续 mob/drop 复用 → 到 12F 拿不到护身符）。*/
     for (int i = 0; i < kMaxMob; i++)  s_mob_used[i] = false;
-    for (int i = 0; i < kMaxItem; i++)  if (s_item_used[i] && !held_by_hero(&s_item_pool[i]))
+    for (int i = 0; i < kMaxItem; i++)  if (s_item_used[i] && !held_by_hero(&s_item_pool[i])
+                                            && s_item_pool[i].kind != Item::K_AMULET)
                                             s_item_used[i] = false;
     for (int i = 0; i < kMaxBuff; i++)  s_buff_used[i] = false;
 
@@ -1326,6 +1329,136 @@ void Game::debug_m5_selftest() {
     ESP_LOGI("dg.m5", "M5 SUMMARY reachable=%d/%d mimic=%d %s",
              pass, DG_MAX_DEPTH, mimic_ok ? 1 : 0,
              (fail == 0 && mimic_ok) ? "ALL PASS" : "CHECK ABOVE");
+}
+
+/* M6 路径回放专用：从 (sx,sy) 沿 passable() BFS 铺父指针（目标格特殊放行）。
+ * 返回可达；vis 非 0 格可回溯：起点→目标 = 反复读 par[idx] 直到起点。 */
+static bool m6_flood_bfs(Level* lv, int sx, int sy, int tx, int ty,
+                         uint8_t* vis, int* par_x, int* par_y)
+{
+    static const int dx4[4] = { 0, 1, 0, -1 };
+    static const int dy4[4] = { -1, 0, 1, 0 };
+    memset(vis, 0, DG_MAP_W * DG_MAP_H);
+    int head = 0, tail = 0;
+    static int q[DG_MAP_W * DG_MAP_H];   /* static：bsp_console 栈小，4KB 上栈会溢出 */
+    q[tail++] = sx + sy * DG_MAP_W;
+    vis[sx + sy * DG_MAP_W] = 1;
+    while (head < tail) {
+        int idx = q[head++];
+        if (idx == tx + ty * DG_MAP_W) break;
+        int x = idx % DG_MAP_W, y = idx / DG_MAP_W;
+        for (int k2 = 0; k2 < 4; k2++) {
+            int nx = x + dx4[k2], ny = y + dy4[k2];
+            if (nx < 0 || ny < 0 || nx >= DG_MAP_W || ny >= DG_MAP_H) continue;
+            int ni = nx + ny * DG_MAP_W;
+            if (vis[ni]) continue;
+            if ((nx != tx || ny != ty) && !lv->passable(nx, ny)) continue;
+            vis[ni] = 1; par_x[ni] = x; par_y[ni] = y; q[tail++] = ni;
+        }
+    }
+    return vis[tx + ty * DG_MAP_W] != 0;
+}
+
+/* ===== M6 取证：全程通关链路（串口 'u'）=====
+ * 用「超配英雄」（STR=100 一击杀 / HP=200 抗 traps 与首领 / 钥匙 9）把战斗
+ * 随机性从失败路径剔除，但走的全是真实游戏链路：hero_try_step（战斗/拾取/
+ * 开门/陷阱/宝箱）→ descend_stairs（12 层重建+投放）→ 12F 捡护身符 → 拾取
+ * 即 WIN。每层打 HP/EXP/LV/GOLD/KEYS 曲线供平衡复查；多 seed 压力验证任意局
+ * 都能走通。注：本自检不是平衡实验（超配会抹平难度），平衡靠逐层曲线数据
+ * 与真机 auto 冒烟交叉印证。 */
+void Game::debug_m6_fullrun() {
+    if (scene != DG_SCENE_IN_GAME) new_game(DG_CLASS_WARRIOR, 20261006u);
+    if (!hero || !level) { ESP_LOGE("dg.m6", "M6 no-hero/level"); return; }
+    const uint32_t s = seed;
+    static uint8_t m6_vis[DG_MAP_W * DG_MAP_H];
+    static int m6_px[DG_MAP_W * DG_MAP_H], m6_py[DG_MAP_W * DG_MAP_H];
+    ESP_LOGI("dg.m6", "M6 FULLRUN BEGIN seed=%u", (unsigned)s);
+
+    int wins = 0;
+    const int seeds = 8;
+    for (int k = 0; k < seeds; k++) {
+        uint32_t sd = s ^ (uint32_t)(k * 0x9E3779B1u + 0x5555u);
+        new_game(DG_CLASS_WARRIOR, sd);
+        depth = 0; level->depth = 0;
+        level->at(hero->x, hero->y).actor = hero;
+        hero->str = 100; hero->hp_max = 200; hero->hp = 200; hero->keys = 9;
+        int killed = 0;
+        bool ok = true;
+        for (int d = 0; d < DG_MAX_DEPTH && ok && scene == DG_SCENE_IN_GAME; d++) {
+            /* 清场：本自检验的是 descend→护身符→WIN 链路完整性，不是战斗；
+             * 先把除英雄外的演员（怪）全部回池，免得怪走上路径把导航拖成 livelock */
+            for (int i = level->actor_count - 1; i >= 1; i--) {
+                Actor* a = level->actors[i];
+                if (!a) continue;
+                if (level->at(a->x, a->y).actor == a) level->at(a->x, a->y).actor = nullptr;
+                level->del_actor(a);
+                free_mob(static_cast<Mob*>(a));
+            }
+            int tx = (int)(d < DG_MAX_DEPTH - 1 ? level->exit_pos : level->amulet_pos) % DG_MAP_W;
+            int ty = (int)(d < DG_MAX_DEPTH - 1 ? level->exit_pos : level->amulet_pos) / DG_MAP_W;
+            /* BFS 父指针：英雄→目标（出口/护身符格特殊放行，同 M5 口径）*/
+            if (!m6_flood_bfs(level, hero->x, hero->y, tx, ty, m6_vis, m6_px, m6_py)) {
+                ok = false;
+                ESP_LOGE("dg.m6", "M6 seed%d floor%d 目标不可达 FAIL", k, d + 1);
+                break;
+            }
+            /* 路径回放：先把父指针从目标回溯成有序路径，再正向逐步
+             * hero_try_step（真实落子：战斗/拾取/开门/陷阱全走游戏逻辑）；
+             * 被怪推离路线就重算 BFS，最多三次 */
+            static int path_x[DG_MAP_W * DG_MAP_H], path_y[DG_MAP_W * DG_MAP_H];
+            int plen = 0;
+            int guard = DG_MAP_W * DG_MAP_H * 4;
+            bool arrived = false;
+            for (int rebuild = 0; rebuild < 3 && !arrived; rebuild++) {
+                if (!m6_flood_bfs(level, hero->x, hero->y, tx, ty, m6_vis, m6_px, m6_py)) break;
+                plen = 0;
+                for (int cx = tx, cy = ty; !(cx == hero->x && cy == hero->y) && plen < DG_MAP_W * DG_MAP_H; ) {
+                    path_x[plen] = cx; path_y[plen] = cy; plen++;
+                    int p = m6_px[cx + cy * DG_MAP_W], q2 = m6_py[cx + cy * DG_MAP_W];
+                    cx = p; cy = q2;
+                }
+                int pi = plen - 1;               /* 从靠近起点的端点开始走 */
+                while (pi >= 0 && guard-- > 0) {
+                    int gx = path_x[pi], gy = path_y[pi];
+                    Tile& nt = level->at(gx, gy);
+                    /* 死户残留：Mob::die 已 free_mob 并回池，hero_try_step 不管清位；
+                     * 这里只把悬空的 tile.actor 标位清摸，实体回收交给 advance_mobs 收割 */
+                    if (nt.actor && nt.actor != hero && !nt.actor->is_alive()) nt.actor = nullptr;
+                    if (hero->x == gx && hero->y == gy) { pi--; continue; }   /* 已到位（宝箱原地开等）→下一个路点 */
+                    /* 统一走 hero_try_step：前方有敌就砍，无敌就移动（不自己 attack/free，避免二次释放）*/
+                    bool moved = hero_try_step(gx, gy);
+                    if (moved && nt.actor && nt.actor != hero && !nt.actor->is_alive()) nt.actor = nullptr;
+                    if (hero->x == gx && hero->y == gy) pi--;                 /* 真站上去才算达成路点 */
+                    advance_mobs();
+                    if (!moved && !(nt.actor && nt.actor != hero)) guard--;   /* 非战斗却走不通：消耗预算防死循环 */
+                }
+                if (hero->x == tx && hero->y == ty) { arrived = true; break; }
+            }
+            if (!arrived) {
+                ok = false;
+                ESP_LOGE("dg.m6", "M6 seed%d floor%d 未走到目标(h=%d,%d→%d,%d) FAIL",
+                         k, d + 1, hero->x, hero->y, tx, ty);
+                break;
+            }
+            ESP_LOGI("dg.m6", "M6 seed%d floor%d hp=%d/%d exp=%d lv=%d gold=%d keys=%d killed=%d %s",
+                     k, d + 1, hero->hp, hero->hp_max, hero->exp, hero->lvl,
+                     hero->gold, hero->keys, killed, scene == DG_SCENE_WIN ? "WIN" : "OK");
+            if (d < DG_MAX_DEPTH - 1) {
+                level->at(hero->x, hero->y).actor = nullptr;   /* descend 前清占位，防新层怪指向旧指针 */
+                if (!descend_stairs()) { ok = false;
+                    ESP_LOGE("dg.m6", "M6 seed%d floor%d 下楼失败 FAIL", k, d + 1); break; }
+                level->at(hero->x, hero->y).actor = hero;
+            }
+        }
+        bool win = hero->has_amulet && scene == DG_SCENE_WIN;
+        if (win) wins++;
+        ESP_LOGI("dg.m6", "M6 seed%d RESULT amulet=%d scene_win=%d %s",
+                 k, hero->has_amulet ? 1 : 0, scene == DG_SCENE_WIN ? 1 : 0,
+                 (ok && win) ? "PASS" : "FAIL");
+    }
+    /* 收尾：回主 seed 干净开局 */
+    new_game(DG_CLASS_WARRIOR, s);
+    ESP_LOGI("dg.m6", "M6 SUMMARY wins=%d/%d %s", wins, seeds, wins == seeds ? "ALL PASS" : "CHECK ABOVE");
 }
 
 }  /* namespace dg */

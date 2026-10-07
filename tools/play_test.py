@@ -218,6 +218,13 @@ def auto(rounds=20, prefix="shots/auto", walk_wait=5.0, prefer_exit=False):
             break
         hx, hy = d["hero"]
         target = None
+        # prefer_exit：已经站在楼梯上就按下楼键（DG_BTN_DESCEND 'r'），真正逐层下
+        if prefer_exit and d["exit"][0] >= 0 and d["exit"] == d["hero"]:
+            print("★ 站在楼梯 %s → 'r' 下楼" % (d["exit"],))
+            ses.press("r", 1.2)
+            shot_idx += 1
+            ses.shot("%s_%02d.png" % (prefix, shot_idx))
+            continue
         if prefer_exit and d["exit"][0] >= 0 and d["exit"] != d["hero"]:
             target = ("楼梯", d["exit"])
         if target is None:
