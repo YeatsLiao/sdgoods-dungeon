@@ -53,6 +53,10 @@ shot_*.jpg
 shot_*.png
 shots/
 
+# ---- 取证/临时脚本（_ 前缀约定不入库）----
+tools/_*.py
+tools/_preview/
+
 # ---- 字体工具 ----
 node_modules/
 tools/fonts/*.ttf
