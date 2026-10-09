@@ -487,4 +487,45 @@ TITLE ──新冒险──▶ CLASS_SELECT ──选战/法/贼/猎──▶ IN
 
 ---
 
+## 15. v0.5 表现层（游戏感 · 本版本实际实现）
+
+骨架对齐后与「像个游戏」的差距在表现层。本章全部特性已真机验证（shots/ui5、
+shots/v05c、shots/v05wp）。
+
+### 15.1 引擎侧（dungeon_engine）
+
+- **飘字僵死修复**：`tick()` 的脏帧判定 `any` 只统计移动/闪白，飘字/光束存活期
+  fb 不脏 → 飘字只画出生帧就僵住 750ms 后瞬消（打击感缺失根因）。修复：存活期
+  内保持 `anim_running`，每帧重画（飘字上移 / 光束淡出）。
+- **拾金飘字**：拾取金币 `add_float("+N", 0xFDC0)`（治疗/升级/进食原有）。
+- **dg_hud_t 扩展**：`exit_x / exit_y / exit_seen`（exit_seen = 出口 tile 的
+  `explored` 永久揭雾位），供 UI 呼吸路点定位。变更本字段视为架构级改动。
+
+### 15.2 UI 侧（ui_dungeon.c）
+
+| 特性 | 实现 | 备注 |
+|---|---|---|
+| 受击抖屏 | 两次 HUD 刷新间 hp 下降 → 视口 x 40ms×4 抖动 | 拾金/治疗不触发 |
+| 低血闪烁 | hp≤30% → 血条 INDICATOR 无限闪，回升自停 | `lv_anim_del` 恢复 |
+| 出口呼吸路点 | 30px 青环叠出口 tile，`exit_seen && !on_stairs` 时显示 | 出视口/被遮挡自动隐藏 |
+| 换层横幅 | 「第 N 层 · 章节名」黑胶囊，淡入→停留→淡出 | `lv_anim_start` 会删旧动画，两段必须 ready_cb 链接；显示期内压制消息 toast（同区重叠），窗口后 toast 照常补弹 |
+| 首次引导 | NVS `dgdungeon/guide_seen` 一次性标记，320 圆盘浮层 | ⚠ `nvs_get` 对不存在的 key 不写 out 参数，初值必须 0 |
+| 结算氛围雾 | 死红/胜金 bg 透明→70% + 整树淡入 | |
+| 场景转场 | 标题/选职业淡入，背包/菜单底部滑入 | 逐对象 opa + y 位移 |
+| 标题徽记 | 徽记 translate_y 0→-5 无限浮动 | |
+
+### 15.3 LVGL 8.3.11 约束（血泪结论）
+
+- style `opa` **不级联子对象**，整树混合需 `LV_STYLE_OPA_LAYERED` 离屏 layer
+  （360 满圆 ≈ 253KB PSRAM）→ 全部改逐对象 opa 动画（fade_tree），零离屏开销。
+- `transform_zoom` 同样触发离屏 → 结算入场改用 y 上滑。
+
+### 15.4 取证入口
+
+`tools/_ui_capture.py shots/uiN`（六屏流）· `tools/_v05_capture.py shots/v05N`
+（引导/横幅/飘字/路点专项）。⚠ 串口 `t`/`n` 坐标命令必须以 `;` 结尾，否则
+坐标模式不闭合会吞掉后续命令流。
+
+---
+
 **文档结束**。等 clone 完把这份 DESIGN.md 搬进仓库根目录即可开工。
