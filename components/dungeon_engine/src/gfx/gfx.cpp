@@ -147,10 +147,17 @@ static int count_frames(Sheet s) {
 }
 
 static uint16_t dim565(uint16_t c) {
-    uint16_t r = (uint16_t)((((c >> 11) & 0x1F) * 9 >> 5) << 11);
-    uint16_t g = (uint16_t)((((c >> 5)  & 0x3F) * 9 >> 5) << 5);
-    uint16_t b = (uint16_t)(((c & 0x1F) * 9 >> 5));
-    return (uint16_t)(r | g | b);
+    /* 记忆态： darker + 去饱和。此前只简单 ×9/32 压暗，苔原随机花纹、
+     * 墙棱条在暗区仍然清晰可见， explored 区域一大就像满屏阴影斑块。
+     * 把各通道向统一亮度靠拢（保 1/3 原色）再整体压到 ≈18%，
+     * 记忆区变成均匀暗灰：能辨轮廓不抢戏。 */
+    int r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    int lum = (r * 77 + g * 151 + b * 28) >> 8;      /* 0..31 */
+    int lum6 = lum * 2;                              /* 6bit 空间的亮度 */
+    r = ((lum * 2 + r) / 3) * 6 / 32;
+    g = ((lum6 * 2 + g) / 3) * 6 / 32;
+    b = ((lum * 2 + b) / 3) * 6 / 32;
+    return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
 bool load() {

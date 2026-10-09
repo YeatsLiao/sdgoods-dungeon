@@ -267,20 +267,12 @@ bool Level::generate(uint32_t base_seed, int depth_)
         if (!changed) break;
     }
 
-    /* --- 3. 边界墙：所有贴地板的 EMPTY 变 WALL --- */
-    for (int y = 0; y < DG_MAP_H; y++) {
-        for (int x = 0; x < DG_MAP_W; x++) {
-            Tile& t = tiles[x + y * DG_MAP_W];
-            if (t.terr != DG_TERR_EMPTY) continue;
-            static const int dx4[4] = { 0, 1, 0,-1 };
-            static const int dy4[4] = { -1, 0, 1, 0 };
-            for (int k = 0; k < 4; k++) {
-                int nx = x + dx4[k], ny = y + dy4[k];
-                if (nx < 0 || nx >= DG_MAP_W || ny < 0 || ny >= DG_MAP_H) continue;
-                dg_terrain_t nt = (dg_terrain_t)tiles[nx + ny * DG_MAP_W].terr;
-                if (nt != DG_TERR_EMPTY) { t.terr = DG_TERR_WALL; break; }
-            }
-        }
+    /* --- 3. 实体墙：上游语义 = 没挖开的地方全是 WALL（厚墙实体），
+     * 剩余 EMPTY 一律转 WALL。此前只把贴地板一圈转墙（1 格薄墙），
+     * 导致三层墙渲染（正立面 + 暗部 + INTERNAL 棱条）无法成形、
+     * 碎砖悬浮、墙线留未探索黑洞（含地图最外圈）。 */
+    for (int i = 0; i < LENGTH; i++) {
+        if (tiles[i].terr == DG_TERR_EMPTY) tiles[i].terr = DG_TERR_WALL;
     }
 
     /* --- 4. 整形：对穿有地板的孤立墙改门（缝合友好的等价 smoothing） --- */
