@@ -283,6 +283,7 @@ public:
     void get_cam(int* x, int* y)      { if (x) *x = cam_x; if (y) *y = cam_y; }
     int  get_stats_text(char* buf, int cap);
     void get_hud(dg_hud_t* out);
+    void get_stats(dg_stats_t* out);     /* 英雄属性面板（DG_SCENE_HERO） */
     bool inv_get(int slot, dg_item_info_t* out);
     bool inv_use(int slot);
     bool inv_equip(int slot);
@@ -375,7 +376,7 @@ public:
     /* 消息 log：环形定长缓冲，log() 内部拷贝。早期版本只存 char* ，调用方
      * 传栈上 snprintf 缓冲 → 读出来是乱码（真机才会爆），改成存体。 */
     static constexpr int kLogLines = 16;
-    static constexpr int kLogLen   = 64;
+    static constexpr int kLogLen   = 96;   /* 与 UI 侧 msg[96] 对齐：CJK 消息 3B/字，64 会截断长句 */
     char log_lines[kLogLines][kLogLen];
     int  log_head = 0;
     void log(const char* text);

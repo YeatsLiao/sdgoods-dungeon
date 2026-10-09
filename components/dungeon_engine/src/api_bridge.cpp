@@ -121,6 +121,7 @@ bool dg_api_inv_use(int slot) { return Game::instance().inv_use(slot); }
 bool dg_api_inv_equip(int slot) { return Game::instance().inv_equip(slot); }
 bool dg_api_inv_drop(int slot) { Game::instance().inv_drop(slot); return true; }
 int  dg_api_equip_mask(void) { return Game::instance().equip_mask(); }
+void dg_api_get_stats(dg_stats_t *out) { Game::instance().get_stats(out); }
 
 /* ===== 音效队列 ===== */
 bool dg_api_pop_sfx(int *id) { return Game::instance().pop_sfx(id); }

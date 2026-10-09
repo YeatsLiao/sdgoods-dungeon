@@ -355,7 +355,8 @@ void Game::pick_class(int cls) {
 }
 void Game::menu_action(int action, int slot) {
     switch (action) {
-    case 0: save::store(slot); sfx(DG_SFX_SELECT); log("已保存。"); break;
+    case 0: if (save::store(slot)) { sfx(DG_SFX_SELECT); log("已保存。"); scene = DG_SCENE_IN_GAME; }
+            else { sfx(DG_SFX_ERROR); log("保存失败。"); } break;
     case 1: if (save::load(slot)) { sfx(DG_SFX_SELECT); log("读取成功。"); }
             else { sfx(DG_SFX_ERROR); log("没有这个存档。"); } break;
     case 2: goto_title(); sfx(DG_SFX_SELECT); break;
@@ -465,6 +466,10 @@ bool Game::hero_try_step(int gx, int gy) {
             char buf[48];
             snprintf(buf, sizeof(buf), "拾取 %d 金币。（合计 %d）", it->qty, hero->gold);
             log(buf);
+            /* 金色飘字 +N：拾金此前只有音效与日志，无视觉反馈（与伤害/治疗不一致） */
+            char fb[12];
+            snprintf(fb, sizeof(fb), "+%d", it->qty);
+            add_float(hero->x, hero->y, fb, 0xFDC0);
             sfx(DG_SFX_GOLD);
             free_item(it);
             t.item = nullptr;
@@ -599,7 +604,11 @@ void Game::tick() {
             }
             if (a->flash_ticks > 0) { a->flash_ticks--; any = true; }
         }
-        /* 飘字 / 光束按 born_ms 存活，超时自然不再被 render 画出来 */
+        /* 飘字 / 光束按 born_ms 存活：存活期内保持 anim_running，让 fb 每帧
+         * 重画（飘字上移 / 光束淡出）。此前 any 只统计移动/闪白，实体静止时
+         * fb 不脏 → 飘字只画出生帧就僵住，750ms 后瞬消——打击感缺失的根因。 */
+        for (int i = 0; i < kMaxFloats && !any; i++) if (floats[i].used) any = true;
+        for (int i = 0; i < kMaxBeams  && !any; i++) if (beams[i].used)  any = true;
         dirty = any;
         if (!any) anim_running = false;
     }
@@ -630,6 +639,8 @@ void Game::on_tap(int gx, int gy) {
 
     bool acted = false;
     if (adx <= 1 && ady <= 1) {
+        /* 点英雄自身格 = 原地等待（上游 onTAP 语义）；工具栏不再有等待键 */
+        if (gx == hero->x && gy == hero->y) { on_button(DG_BTN_WAIT); return; }
         acted = hero_try_step(gx, gy);
     } else {
         int steps[128];
@@ -775,6 +786,12 @@ void Game::on_button(dg_btn_id_t btn) {
         fb_dirty = true;
         break;
     }
+    case DG_BTN_HERO:
+        if (scene == DG_SCENE_GAME_OVER || scene == DG_SCENE_WIN) break;
+        scene = (scene == DG_SCENE_HERO) ? DG_SCENE_IN_GAME : DG_SCENE_HERO;
+        sfx(DG_SFX_SELECT);
+        fb_dirty = true;
+        break;
     case DG_BTN_MENU:
         if (scene == DG_SCENE_GAME_OVER || scene == DG_SCENE_WIN) {
             goto_title();
@@ -879,6 +896,42 @@ void Game::get_hud(dg_hud_t* out) {
     out->on_stairs = (level->at(hero->x, hero->y).terr == DG_TERR_EXIT) ? 1 : 0;
     out->keys = hero->keys > 255 ? 255 : (uint8_t)hero->keys;
     out->hunger_state = (uint8_t)hunger_state(hero->energy);
+    /* 出口路点（UI 画呼吸高亮）：explored = 已被揭雾记忆，不在 FOV 内也可作
+     * 为路标；站在出口上时 UI 改亮 DESCEND 键并隐藏路点，避免重叠。 */
+    int ex = level->exit_pos % DG_MAP_W, ey = level->exit_pos / DG_MAP_W;
+    out->exit_x = (int16_t)ex; out->exit_y = (int16_t)ey;
+    out->exit_seen = level->at(ex, ey).explored ? 1 : 0;
+}
+
+/* 英雄属性面板：全部现算（含戒指/护甲加成），UI 不做任何公式 */
+void Game::get_stats(dg_stats_t* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->lvl = hero->lvl; out->str = hero->str;
+    out->hp = hero->hp;   out->hp_max = hero->hp_max;
+    out->exp = hero->exp; out->exp_max = hero->maxExp();
+    out->atk_skill = hero->attackSkill();
+    out->def_skill = hero->defenseSkill();
+    if (hero->equipped_weapon) {
+        out->dmg_lo = weapon_dmg_min(hero->equipped_weapon->tier);
+        out->dmg_hi = weapon_dmg_max(hero->equipped_weapon->tier);
+    } else {
+        out->dmg_lo = 1; out->dmg_hi = 3;          /* 空手（上游口径） */
+    }
+    out->armor_dr = hero->armorDrMax();
+    out->gold = hero->gold; out->keys = hero->keys;
+    out->energy = hero->energy; out->energy_max = Hero::kMaxEnergy;
+    out->hunger_state = (uint8_t)hunger_state(hero->energy);
+    out->cls = hero->cls;
+    Item* eq[3] = { hero->equipped_weapon, hero->equipped_armor, hero->equipped_ring };
+    int16_t* icon_out[3] = { &out->wep_icon, &out->arm_icon, &out->rng_icon };
+    const char** name_out[3] = { &out->wep_name, &out->arm_name, &out->rng_name };
+    for (int i = 0; i < 3; i++) {
+        if (!eq[i]) continue;
+        *icon_out[i] = eq[i]->icon;
+        *name_out[i] = item_display(eq[i]->kind, eq[i]->sub, eq[i]->tier,
+                                    is_identified(eq[i]->kind, eq[i]->sub));
+    }
 }
 
 bool Game::inv_get(int slot, dg_item_info_t* out) {
@@ -894,7 +947,9 @@ bool Game::inv_get(int slot, dg_item_info_t* out) {
     return true;
 }
 bool Game::inv_use(int slot) {
-    if (scene != DG_SCENE_IN_GAME) return false;
+    /* 背包面板打开时引擎场景就是 INVENTORY：此前只放行 IN_GAME，
+     * 面板里点「使用」必返回 false（看起来就是按了没反应） */
+    if (scene != DG_SCENE_IN_GAME && scene != DG_SCENE_INVENTORY) return false;
     bool r = hero->use(slot);
     if (r) { end_turn(); }
     fb_dirty = true;

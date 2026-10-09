@@ -66,7 +66,8 @@ typedef enum {
     DG_BTN_SEARCH    = 3,
     DG_BTN_WAIT      = 4,
     DG_BTN_MENU      = 5,
-    DG_BTN_COUNT     = 6
+    DG_BTN_HERO      = 6,   /* 英雄属性面板（纯查看，不耗回合） */
+    DG_BTN_COUNT     = 7
 } dg_btn_id_t;
 
 /* 游戏场景状态机（v0.4 全流程接通，UI 按 scene 切页面） */
@@ -75,6 +76,7 @@ typedef enum {
     DG_SCENE_CLASS_SELECT,     /* 选职业（4 张上游英雄帧 + 简介） */
     DG_SCENE_IN_GAME,          /* 主游戏 */
     DG_SCENE_INVENTORY,        /* 全屏背包 */
+    DG_SCENE_HERO,             /* 英雄属性面板（等级/力量/命中/闪避/伤害/装备） */
     DG_SCENE_MENU,             /* 系统菜单（存 / 读 / 回标题） */
     DG_SCENE_GAME_OVER,        /* 死亡结算 */
     DG_SCENE_WIN,              /* 通关（取得护身符） */
@@ -184,6 +186,8 @@ typedef struct {
     uint8_t on_stairs;            /* 站在 EXIT 上 → DESCEND 键高亮 */
     uint8_t keys;                 /* 钥匙数 */
     uint8_t hunger_state;         /* 0 饱 1 微饿 2 饿 3 快饿死 */
+    int16_t exit_x, exit_y;       /* 出口 tile 坐标（UI 呼吸路点用，v0.5） */
+    uint8_t exit_seen;            /* 出口已被揭雾（explored），0/1 */
 } dg_hud_t;
 
 /* 背包格：UI 画图标网格 + 详情行 */
@@ -341,6 +345,24 @@ bool dg_api_inv_equip(int slot);
 bool dg_api_inv_drop(int slot);
 /* 装备位摘要：1=有武器 2=有护甲 4=有戒指（UI 在背包页画「已装备」角标）。 */
 int  dg_api_equip_mask(void);
+
+/* 英雄属性面板数据（DG_SCENE_HERO 用）：一次拉全，UI 只格式化。
+ * 图标是 items 图集格子号（同 dg_item_info_t.icon），名称为引擎静态字面量。 */
+typedef struct {
+    int16_t lvl, str;
+    int16_t hp, hp_max, exp, exp_max;
+    int16_t atk_skill;                  /* 命中（含戒指加成） */
+    int16_t def_skill;                  /* 闪避 */
+    int16_t dmg_lo, dmg_hi;             /* 伤害区间（空手 1~3） */
+    int16_t armor_dr;                   /* 护甲最大减伤 */
+    int16_t gold, keys;
+    int16_t energy, energy_max;
+    uint8_t hunger_state;               /* 同 dg_hud_t */
+    int16_t cls;
+    int16_t wep_icon, arm_icon, rng_icon;   /* 0 = 空槽 */
+    const char *wep_name, *arm_name, *rng_name;  /* NULL = 空槽 */
+} dg_stats_t;
+void dg_api_get_stats(dg_stats_t *out);
 
 /* ===== 音效队列 ===== */
 
